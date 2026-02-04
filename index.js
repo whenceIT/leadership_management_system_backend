@@ -20,10 +20,14 @@ app.post("/sign-in",async(req,res)=>{
         const userPassword =  user[0][0].password
         console.log(userPassword)
         const finalPassword = userPassword.replace("$2y$", "$2b$")
-        console.log(finalPassword)
+      //  console.log(finalPassword)
         const isPasswordMatching = bcrypt.compareSync(password,finalPassword)
-        console.log(isPasswordMatching)
-        res.json(user[0][0])
+       // console.log(isPasswordMatching)
+        if(isPasswordMatching){
+          res.json(user[0][0])
+        }else{
+          res.json('incorrect password')
+        }
     }catch(err){
         console.log(err)
     }
