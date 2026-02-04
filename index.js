@@ -11,6 +11,17 @@ app.use(express.json())
 
 app.use(bodyParser.urlencoded({ extended: false }));
 
+// Health check endpoint to test DB connection
+app.get("/health", async (req, res) => {
+    try {
+        const [result] = await pool.query("SELECT 1 as status");
+        res.json({ status: "ok", message: "Database connection is working", data: result });
+    } catch (err) {
+        console.log(err);
+        res.status(500).json({ status: "error", message: "Database connection failed", error: err.message });
+    }
+});
+
 
 app.post("/sign-in",async(req,res)=>{
     try{
