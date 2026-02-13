@@ -204,6 +204,40 @@ app.get('/smart-kpi-scores/:user_id', async (req, res) => {
   }
 });
 
+app.get('/smart-kpi-scores/:user_id', async (req, res) => {
+  try {
+    const { user_id } = req.params;
+
+    const scores = await pool.query(
+      `SELECT 
+          s.id AS score_id,
+          s.kpi_id,
+          s.user_id,
+          s.score,
+
+          k.name,
+          k.description,
+          k.scoring,
+          k.target,
+          k.role,
+          k.position_id,
+          k.category,
+          k.weight
+
+       FROM smart_kpi_score s
+       JOIN smart_kpis k ON s.kpi_id = k.id
+       WHERE s.user_id = ?`,
+      [user_id]
+    );
+
+    res.json(scores[0]);
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+
 
 
 
