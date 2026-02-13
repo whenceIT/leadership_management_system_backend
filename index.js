@@ -176,9 +176,33 @@ app.get('/leadership-positions',async(req,res)=>{
 
 
 
+app.get('/all-smart-kpi-scores', async (req, res) => {
+  try {
+    const scores = await pool.query('SELECT * FROM smart_kpi_score');
+    res.json(scores[0]);
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 
 
+app.get('/smart-kpi-scores/:user_id', async (req, res) => {
+  try {
+    const { user_id } = req.params;
+
+    const scores = await pool.query(
+      'SELECT * FROM smart_kpi_score WHERE user_id = ?',
+      [user_id]
+    );
+
+    res.json(scores[0]);
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 
 
