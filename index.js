@@ -97,6 +97,7 @@ app.post("/sign-in",async(req,res)=>{
 
   // Add a new smart KPI
 app.post('/kpi', async (req, res) => {
+  // console.log(req.body)
   const { role, name, description, scoring, target } = req.body;
 
   if (!role || !name || !scoring || !target) {
