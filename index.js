@@ -97,8 +97,7 @@ app.post("/sign-in",async(req,res)=>{
 
   // Add a new smart KPI
 app.post('/kpi', async (req, res) => {
-  // console.log(req.body)
-  const { role, name, description, scoring, target } = req.body;
+  const { role, name, description, scoring, target, position_id,category,weight } = req.body;
 
   if (!role || !name || !scoring || !target) {
     return res.status(400).json({ error: 'role, name, scoring, and target are required' });
@@ -106,8 +105,8 @@ app.post('/kpi', async (req, res) => {
 
   try {
     const result = await pool.query(
-      'INSERT INTO smart_kpis (role, name, description, scoring, target) VALUES (?, ?, ?, ?, ?)',
-      [role, name, description || '', scoring, target]
+      'INSERT INTO smart_kpis (role, name, description, scoring, target, position_id,category,weight ) VALUES (?, ?, ?, ?, ?,?,?,?)',
+      [role, name, description || '', scoring, target,position_id,category,weight]
     );
     res.status(201).json({ message: 'KPI added', kpiId: result[0].insertId });
   } catch (err) {
@@ -160,12 +159,12 @@ app.delete('/kpi/:id', async (req, res) => {
 // Update/edit a KPI by id
 app.put('/kpi/:id', async (req, res) => {
   const { id } = req.params;
-  const { role, name, description, scoring, target } = req.body;
+  const { role, name, description, scoring, target,position_id,category,weight } = req.body;
 
   try {
     const [result] = await pool.query(
-      'UPDATE smart_kpis SET role = ?, name = ?, description = ?, scoring = ?, target = ? WHERE id = ?',
-      [role, name, description, scoring, target, id]
+      'UPDATE smart_kpis SET role = ?, name = ?, description = ?, scoring = ?, target = ?,position_id = ?,category = ?, weight = ? WHERE id = ?',
+      [role, name, description, scoring, target,position_id,category,weight ,id]
     );
     if (result.affectedRows === 0) return res.status(404).json({ error: 'KPI not found' });
     res.json({ message: 'KPI updated' });
@@ -174,6 +173,18 @@ app.put('/kpi/:id', async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
+
+
+app.get('/leadership-positions',async(req,res)=>{
+  try{
+    const leadership_positions = await pool.query("SELECT * FROM job_positions");
+    res.json(leadership_positions[0])
+  }catch(err){
+    console.log(err)
+    res.status(500).json({ error: "Server error" });
+  }
+})
+
 
 
 
