@@ -247,38 +247,33 @@ app.get('/smart-loans', async (req, res) => {
       return res.status(400).json({ error: "status is required" });
     }
 
-    let query = `SELECT * FROM loans WHERE status = $1`;
+    let query = `SELECT * FROM loans WHERE status = ?`;
     let values = [status];
-    let index = 2;
 
     // If BOTH start and end dates exist
     if (start_date && end_date) {
-      query += ` AND created_at BETWEEN $${index} AND $${index + 1}`;
+      query += ` AND created_at BETWEEN ? AND ?`;
       values.push(start_date, end_date);
-      index += 2;
     }
 
     // If ONLY start_date exists
     else if (start_date && !end_date) {
-      query += ` AND created_at >= $${index}`;
+      query += ` AND created_at >= ?`;
       values.push(start_date);
-      index += 1;
     }
 
     // If ONLY end_date exists
     else if (!start_date && end_date) {
-      query += ` AND created_at <= $${index}`;
+      query += ` AND created_at <= ?`;
       values.push(end_date);
-      index += 1;
     }
 
-    // If BOTH are null → just filter by status
-
-    const loans = await pool.query(query, values);
+    const [loans] = await pool.query(query, values);
 
     return res.json({
-      count: loans.rowCount,
-      data: loans.rows
+      success: true,
+      count: loans.length,
+      data: loans
     });
 
   } catch (error) {
@@ -286,6 +281,7 @@ app.get('/smart-loans', async (req, res) => {
     return res.status(500).json({ error: "Server error" });
   }
 });
+
 
 
 app.get("/loan/:id",async(req,res)=>{
@@ -323,7 +319,7 @@ app.post('/create-smart-priority-actions', async (req, res) => {
       });
     }
 
-    // Optional: ensure due is numeric
+    // Ensure due is numeric
     if (isNaN(due)) {
       return res.status(400).json({
         error: "due must be a valid number"
@@ -332,18 +328,21 @@ app.post('/create-smart-priority-actions', async (req, res) => {
 
     const query = `
       INSERT INTO smart_priority_actions (actions, due)
-      VALUES ($1, $2)
-      RETURNING *
+      VALUES (?, ?)
     `;
 
-    const values = [actions, due];
+    const [result] = await pool.query(query, [actions, due]);
 
-    const result = await pool.query(query, values);
+    // Fetch the inserted row
+    const [newRow] = await pool.query(
+      `SELECT * FROM smart_priority_actions WHERE id = ?`,
+      [result.insertId]
+    );
 
     return res.status(201).json({
       success: true,
       message: "Smart priority action created successfully",
-      data: result.rows[0]
+      data: newRow[0]
     });
 
   } catch (error) {
@@ -353,9 +352,6 @@ app.post('/create-smart-priority-actions', async (req, res) => {
     });
   }
 });
-
-
-
 
 
 
