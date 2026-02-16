@@ -204,14 +204,13 @@ app.get('/all-smart-kpi-scores', async (req, res) => {
 //   }
 // });
 
-app.get('/smart-kpi-scores/:user_id', async (req, res) => {
+app.get('/smart-kpi-scores/:user_id/:position_id', async (req, res) => {
   try {
-    const { user_id } = req.params;
-
+    const { user_id, position_id } = req.params;
     const scores = await pool.query(
       `SELECT 
           s.id AS score_id,
-          s.kpi_id,
+          k.id AS kpi_id,
           s.user_id,
           s.score,
 
@@ -224,10 +223,13 @@ app.get('/smart-kpi-scores/:user_id', async (req, res) => {
           k.category,
           k.weight
 
-       FROM smart_kpi_score s
-       JOIN smart_kpis k ON s.kpi_id = k.id
-       WHERE s.user_id = ?`,
-      [user_id]
+      FROM smart_kpis k
+      LEFT JOIN smart_kpi_score s 
+          ON s.kpi_id = k.id 
+          AND s.user_id = ?
+
+      WHERE k.position_id = ?`,
+      [user_id, position_id]
     );
 
     res.json(scores[0]);
@@ -236,7 +238,6 @@ app.get('/smart-kpi-scores/:user_id', async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
-
 
 
 app.get('/smart-loans', async (req, res) => {
