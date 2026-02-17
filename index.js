@@ -322,7 +322,7 @@ app.get("/offices",async(req,res)=>{
 
 app.post('/create-smart-priority-actions', async (req, res) => {
   try {
-    const { actions, due } = req.body;
+    const { actions, due, urgent, position_id, user_id, office_id } = req.body;
 
     // Validation
     if (!actions || due === undefined || due === null) {
@@ -339,11 +339,11 @@ app.post('/create-smart-priority-actions', async (req, res) => {
     }
 
     const query = `
-      INSERT INTO smart_priority_actions (actions, due)
-      VALUES (?, ?)
+      INSERT INTO smart_priority_actions (actions, due, urgent, status, position_id, user_id, office_id, created_date, updated_at)
+      VALUES (?, ?, ?, 0, ?, ?, ?, NOW(), NOW())
     `;
 
-    const [result] = await pool.query(query, [actions, due]);
+    const [result] = await pool.query(query, [actions, due, urgent || 0, position_id || null, user_id || null, office_id || null]);
 
     // Fetch the inserted row
     const [newRow] = await pool.query(
@@ -365,14 +365,74 @@ app.post('/create-smart-priority-actions', async (req, res) => {
   }
 });
 
-app.get("/staff",async(req,res)=>{
-    try{
-        const offices =  await pool.query(`SELECT * FROM users WHERE status='Active'`);
-        res.json(offices[0])
-    } catch(err){
-        console.log(err)
+app.get("/smart-priority-actions", async (req, res) => {
+  try {
+    const { start_date, end_date, user_id, office_id, position_id, status } = req.query;
+
+    // Get today's date as default
+    const today = new Date().toISOString().split('T')[0];
+
+    // Use provided dates or default to today
+    const startDate = start_date || today;
+    const endDate = end_date || today;
+
+    let query = `
+      SELECT * 
+      FROM smart_priority_actions 
+      WHERE status = 0 
+      AND created_date BETWEEN ? AND ?
+    `;
+
+    let values = [startDate, endDate];
+
+
+    // Add optional filters
+    if (user_id) {
+      query += ` AND user_id = ?`;
+      values.push(user_id);
     }
-})
+
+    if (office_id) {
+      query += ` AND office_id = ?`;
+      values.push(office_id);
+    }
+
+    if (position_id) {
+      query += ` AND position_id = ?`;
+      values.push(position_id);
+    }
+
+    if (status !== undefined) {
+      query += ` AND status = ?`;
+      values.push(status);
+    }
+
+    query += ` ORDER BY created_date DESC`;
+
+    const [actions] = await pool.query(query, values);
+
+    return res.json({
+      success: true,
+      count: actions.length,
+      data: actions
+    });
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: "Failed to fetch smart priority actions" });
+  }
+});
+
+app.get("/staff", async (req, res) => {
+    try {
+        const staff = await pool.query(`SELECT * FROM users WHERE status='Active'`);
+        res.json(staff); 
+    } catch (err) {
+        console.log(err);
+        res.status(500).json({ error: "Failed to fetch staff" });
+    }
+});
+
 
 
 
