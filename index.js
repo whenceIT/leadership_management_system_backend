@@ -296,16 +296,19 @@ app.get('/smart-loans', async (req, res) => {
 
 
 
-app.get("/loan/:id",async(req,res)=>{
-    try{
-        const {id} = req.params;
-        console.log(id)
-        const loan =  await pool.query(`SELECT * FROM loans WHERE id = ? `,[id]);
-        console.log(loan)
+app.get("/loan/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+        const [loan] = await pool.query(`SELECT * FROM loans WHERE id = ?`, [id]);
 
-        res.json(loan)
-    } catch(err){
-        console.log(err)
+        if (loan.length === 0) {
+            return res.status(404).json({ error: "Loan not found" });
+        }
+
+        res.json(loan[0]);
+    } catch (err) {
+        console.log(err);
+        res.status(500).json({ error: "Failed to fetch loan" });
     }
 })
 
@@ -442,7 +445,7 @@ app.get("/staffbyPosition", async (req, res) => {
         }
 
         const [staff] = await pool.query(
-            `SELECT * FROM users WHERE status = 'Active' AND position_id = ?`,
+            `SELECT * FROM users WHERE status = 'Active' AND job_position = ?`,
             [position_id]
         );
         res.json(staff);
