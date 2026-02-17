@@ -332,7 +332,7 @@ app.post('/create-smart-priority-actions', async (req, res) => {
     }
 
     // Ensure due is numeric
-    if (isNaN(due)) {
+    if (!due) {
       return res.status(400).json({
         error: "due must be a valid number"
       });
@@ -427,6 +427,25 @@ app.get("/staff", async (req, res) => {
     try {
         const staff = await pool.query(`SELECT * FROM users WHERE status='Active'`);
         res.json(staff); 
+    } catch (err) {
+        console.log(err);
+        res.status(500).json({ error: "Failed to fetch staff" });
+    }
+});
+
+app.get("/staffbyPosition", async (req, res) => {
+    try {
+        const { position_id } = req.query;
+
+        if (!position_id) {
+            return res.status(400).json({ error: "position_id is required" });
+        }
+
+        const [staff] = await pool.query(
+            `SELECT * FROM users WHERE status = 'Active' AND position_id = ?`,
+            [position_id]
+        );
+        res.json(staff);
     } catch (err) {
         console.log(err);
         res.status(500).json({ error: "Failed to fetch staff" });
