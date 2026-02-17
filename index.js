@@ -367,6 +367,14 @@ app.post('/create-smart-priority-actions', async (req, res) => {
   }
 });
 
+app.get("/staff",async(req,res)=>{
+    try{
+        const offices =  await pool.query(`SELECT * FROM users WHERE status='Active'`);
+        res.json(offices[0])
+    } catch(err){
+        console.log(err)
+    }
+})
 
 
 
