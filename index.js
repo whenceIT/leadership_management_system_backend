@@ -253,7 +253,7 @@ app.get('/smart-kpi-scores/:user_id/:position_id', async (req, res) => {
 
 app.get('/smart-loans', async (req, res) => {
   try {
-    const { status, start_date, end_date } = req.query;
+    const { status, start_date, end_date, office_id, province_id } = req.query;
 
     if (!status) {
       return res.status(400).json({ error: "status is required" });
@@ -278,6 +278,18 @@ app.get('/smart-loans', async (req, res) => {
     else if (!start_date && end_date) {
       query += ` AND created_at <= ?`;
       values.push(end_date);
+    }
+
+    // Filter by office_id if provided
+    if (office_id) {
+      query += ` AND office_id = ?`;
+      values.push(office_id);
+    }
+
+    // Filter by province_id if provided
+    if (province_id) {
+      query += ` AND province_id = ?`;
+      values.push(province_id);
     }
 
     const [loans] = await pool.query(query, values);
@@ -426,28 +438,62 @@ app.get("/smart-priority-actions", async (req, res) => {
   }
 });
 
+
+// Get all staff active users, byOffice, byProvince
 app.get("/staff", async (req, res) => {
     try {
-        const staff = await pool.query(`SELECT * FROM users WHERE status='Active'`);
-        res.json(staff); 
+        const { office_id, province_id } = req.query;
+
+        let query = `SELECT * FROM users WHERE status = 'Active'`;
+        let values = [];
+
+        // Filter by office_id if provided
+        if (office_id) {
+            query += ` AND office_id = ?`;
+            values.push(office_id);
+        }
+
+        // Filter by province_id if provided
+        if (province_id) {
+            query += ` AND province_id = ?`;
+            values.push(province_id);
+        }
+
+        const [staff] = await pool.query(query, values);
+        res.json(staff);
     } catch (err) {
         console.log(err);
         res.status(500).json({ error: "Failed to fetch staff" });
     }
 });
 
+
 app.get("/staffbyPosition", async (req, res) => {
     try {
-        const { position_id } = req.query;
+        const { position_id, office_id, province_id } = req.query;
 
-        if (!position_id) {
-            return res.status(400).json({ error: "position_id is required" });
+        let query = `SELECT * FROM users WHERE status = 'Active'`;
+        let values = [];
+
+        // Filter by position_id if provided
+        if (position_id) {
+            query += ` AND job_position = ?`;
+            values.push(position_id);
         }
 
-        const [staff] = await pool.query(
-            `SELECT * FROM users WHERE status = 'Active' AND job_position = ?`,
-            [position_id]
-        );
+        // Filter by office_id if provided
+        if (office_id) {
+            query += ` AND office_id = ?`;
+            values.push(office_id);
+        }
+
+        // Filter by province_id if provided
+        if (province_id) {
+            query += ` AND province_id = ?`;
+            values.push(province_id);
+        }
+
+        const [staff] = await pool.query(query, values);
         res.json(staff);
     } catch (err) {
         console.log(err);
