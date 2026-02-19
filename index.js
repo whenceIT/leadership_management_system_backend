@@ -1064,6 +1064,387 @@ app.post('/smart-alerts/mark-all-read', async (req, res) => {
 
 
 
+// Helper function to format currency
+function formatCurrency(value) {
+    if (value >= 1000000) {
+        return `K${(value / 1000000).toFixed(1)}M`;
+    } else if (value >= 1000) {
+        return `K${(value / 1000).toFixed(0)}K`;
+    } else {
+        return `K${value}`;
+    }
+}
+
+/**
+ * GET /user-tiers/:userId
+ * Get user tier information including current tier, next tier, benefits, and historical tiers
+ */
+app.get('/user-tiers/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+
+        // Get current user tier from user_tiers table
+        const [userTierResult] = await pool.query(`
+            SELECT ut.*, td.* 
+            FROM user_tiers ut
+            JOIN tier_definitions td ON ut.tier_id = td.id
+            WHERE ut.user_id = ?
+                AND ut.effective_to IS NULL
+                AND td.is_active = 1
+            ORDER BY ut.effective_from DESC
+            LIMIT 1
+        `, [userId]);
+
+        // If user has no tier assigned, assign initial tier
+        if (userTierResult.length === 0) {
+            return await assignInitialTier(userId, res);
+        }
+
+        const currentUserTier = userTierResult[0];
+        const tierId = currentUserTier.tier_id;
+
+        // Get next tier
+        const [nextTierResult] = await pool.query(`
+            SELECT * 
+            FROM tier_definitions 
+            WHERE minimum_portfolio_value > ?
+                AND is_active = 1
+            ORDER BY minimum_portfolio_value ASC
+            LIMIT 1
+        `, [currentUserTier.minimum_portfolio_value]);
+
+        // Get benefits for current tier
+        const [benefitsResult] = await pool.query(`
+            SELECT * 
+            FROM tier_benefits 
+            WHERE tier_id = ?
+                AND (effective_to IS NULL OR effective_to > NOW())
+            ORDER BY benefit_type
+        `, [tierId]);
+
+        // Get historical tiers
+        const [historicalTiersResult] = await pool.query(`
+            SELECT ut.tier_id, td.name as tier_name, ut.effective_from, ut.effective_to
+            FROM user_tiers ut
+            JOIN tier_definitions td ON ut.tier_id = td.id
+            WHERE ut.user_id = ?
+            ORDER BY ut.effective_from DESC
+        `, [userId]);
+
+        // Calculate progress to next tier
+        let progressPercentage = 0;
+        let nextTierRequirement = null;
+        
+        if (nextTierResult.length > 0) {
+            const nextTier = nextTierResult[0];
+            nextTierRequirement = nextTier.minimum_portfolio_value;
+            
+            // Calculate progress percentage towards next tier
+            const currentTierMin = currentUserTier.minimum_portfolio_value;
+            const portfolioValue = currentUserTier.current_portfolio_value;
+            
+            if (nextTier.minimum_portfolio_value > 0) {
+                progressPercentage = Math.min(
+                    100,
+                    Math.round((portfolioValue / nextTier.minimum_portfolio_value) * 100)
+                );
+            }
+        }
+
+        // Prepare response data
+        const responseData = {
+            user_id: parseInt(userId),
+            current_tier: {
+                id: currentUserTier.tier_id,
+                name: currentUserTier.name,
+                description: currentUserTier.description,
+                tier_range: currentUserTier.tier_range,
+                minimum_portfolio_value: parseFloat(currentUserTier.minimum_portfolio_value),
+                badge_color: currentUserTier.badge_color,
+                text_color: currentUserTier.text_color
+            },
+            next_tier: nextTierResult.length > 0 ? {
+                id: nextTierResult[0].id,
+                name: nextTierResult[0].name,
+                minimum_portfolio_value: parseFloat(nextTierResult[0].minimum_portfolio_value)
+            } : null,
+            portfolio_summary: {
+                current_value: parseFloat(currentUserTier.current_portfolio_value),
+                current_formatted: formatCurrency(currentUserTier.current_portfolio_value),
+                required_for_next_tier: nextTierRequirement ? parseFloat(nextTierRequirement) : null,
+                required_formatted: nextTierRequirement ? formatCurrency(nextTierRequirement) : null,
+                progress_percentage: progressPercentage
+            },
+            benefits: benefitsResult.map(benefit => ({
+                benefit_type: benefit.benefit_type,
+                description: benefit.description,
+                value: benefit.value
+            })),
+            historical_tiers: historicalTiersResult.map(tier => ({
+                tier_id: tier.tier_id,
+                tier_name: tier.tier_name,
+                effective_from: tier.effective_from ? tier.effective_from.toISOString().split('T')[0] : null,
+                effective_to: tier.effective_to ? tier.effective_to.toISOString().split('T')[0] : null
+            }))
+        };
+
+        return res.json({
+            success: true,
+            data: responseData
+        });
+
+    } catch (error) {
+        console.error('Error fetching user tier:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to fetch user tier data'
+        });
+    }
+});
+
+/**
+ * Helper function to assign initial tier to a user
+ */
+async function assignInitialTier(userId, res) {
+    try {
+        // Check if user exists
+        const [userResult] = await pool.query('SELECT * FROM users WHERE id = ?', [userId]);
+        
+        if (userResult.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+
+        // Get the base tier (minimum_portfolio_value = 0)
+        const [baseTierResult] = await pool.query(`
+            SELECT * FROM tier_definitions 
+            WHERE minimum_portfolio_value = 0 
+                AND is_active = 1
+            LIMIT 1
+        `);
+
+        if (baseTierResult.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'No active base tier found'
+            });
+        }
+
+        const baseTier = baseTierResult[0];
+
+        // Create user_tier record
+        await pool.query(`
+            INSERT INTO user_tiers 
+            (user_id, tier_id, effective_from, current_portfolio_value, progress_percentage)
+            VALUES (?, ?, NOW(), 0, 0)
+        `, [userId, baseTier.id]);
+
+        // Get benefits for base tier
+        const [benefitsResult] = await pool.query(`
+            SELECT * 
+            FROM tier_benefits 
+            WHERE tier_id = ?
+                AND (effective_to IS NULL OR effective_to > NOW())
+            ORDER BY benefit_type
+        `, [baseTier.id]);
+
+        // Get next tier after base
+        const [nextTierResult] = await pool.query(`
+            SELECT * 
+            FROM tier_definitions 
+            WHERE minimum_portfolio_value > ?
+                AND is_active = 1
+            ORDER BY minimum_portfolio_value ASC
+            LIMIT 1
+        `, [baseTier.minimum_portfolio_value]);
+
+        return res.json({
+            success: true,
+            data: {
+                user_id: parseInt(userId),
+                current_tier: {
+                    id: baseTier.id,
+                    name: baseTier.name,
+                    description: baseTier.description,
+                    tier_range: baseTier.tier_range,
+                    minimum_portfolio_value: parseFloat(baseTier.minimum_portfolio_value),
+                    badge_color: baseTier.badge_color,
+                    text_color: baseTier.text_color
+                },
+                next_tier: nextTierResult.length > 0 ? {
+                    id: nextTierResult[0].id,
+                    name: nextTierResult[0].name,
+                    minimum_portfolio_value: parseFloat(nextTierResult[0].minimum_portfolio_value)
+                } : null,
+                portfolio_summary: {
+                    current_value: 0,
+                    current_formatted: 'K0',
+                    required_for_next_tier: nextTierResult.length > 0 ? parseFloat(nextTierResult[0].minimum_portfolio_value) : null,
+                    required_formatted: nextTierResult.length > 0 ? formatCurrency(nextTierResult[0].minimum_portfolio_value) : null,
+                    progress_percentage: 0
+                },
+                benefits: benefitsResult.map(benefit => ({
+                    benefit_type: benefit.benefit_type,
+                    description: benefit.description,
+                    value: benefit.value
+                })),
+                historical_tiers: []
+            }
+        });
+    } catch (error) {
+        console.error('Error assigning initial tier:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to assign initial tier'
+        });
+    }
+}
+
+/**
+ * PUT /user-tiers/:userId/portfolio
+ * Update user portfolio value and check for tier upgrade
+ */
+app.put('/user-tiers/:userId/portfolio', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { portfolio_value } = req.body;
+
+        // Validation
+        if (portfolio_value === undefined || portfolio_value === null) {
+            return res.status(400).json({
+                success: false,
+                message: 'portfolio_value is required'
+            });
+        }
+
+        const newPortfolioValue = parseFloat(portfolio_value);
+
+        // Get current user tier
+        const [currentUserTierResult] = await pool.query(`
+            SELECT ut.*, td.name, td.minimum_portfolio_value, td.order_index
+            FROM user_tiers ut
+            JOIN tier_definitions td ON ut.tier_id = td.id
+            WHERE ut.user_id = ?
+                AND ut.effective_to IS NULL
+                AND td.is_active = 1
+            ORDER BY ut.effective_from DESC
+            LIMIT 1
+        `, [userId]);
+
+        if (currentUserTierResult.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'User has no tier assigned'
+            });
+        }
+
+        const currentUserTier = currentUserTierResult[0];
+        const oldPortfolioValue = parseFloat(currentUserTier.current_portfolio_value);
+
+        // Find appropriate tier for new portfolio value
+        const [appropriateTierResult] = await pool.query(`
+            SELECT * 
+            FROM tier_definitions 
+            WHERE minimum_portfolio_value <= ?
+                AND is_active = 1
+            ORDER BY minimum_portfolio_value DESC
+            LIMIT 1
+        `, [newPortfolioValue]);
+
+        const appropriateTier = appropriateTierResult[0];
+
+        // Get next tier for progress calculation
+        const [nextTierResult] = await pool.query(`
+            SELECT * 
+            FROM tier_definitions 
+            WHERE minimum_portfolio_value > ?
+                AND is_active = 1
+            ORDER BY minimum_portfolio_value ASC
+            LIMIT 1
+        `, [appropriateTier.minimum_portfolio_value]);
+
+        // Calculate progress percentage
+        let progressPercentage = 0;
+        let nextTierRequirement = null;
+        
+        if (nextTierResult.length > 0) {
+            nextTierRequirement = nextTierResult[0].minimum_portfolio_value;
+            progressPercentage = Math.min(
+                100,
+                Math.round((newPortfolioValue / nextTierRequirement) * 100)
+            );
+        }
+
+        // Check if tier upgrade is needed
+        let tierUpgraded = false;
+        let newTierId = currentUserTier.tier_id;
+
+        if (appropriateTier.id !== currentUserTier.tier_id) {
+            tierUpgraded = true;
+            newTierId = appropriateTier.id;
+
+            // Close current tier record
+            await pool.query(`
+                UPDATE user_tiers 
+                SET effective_to = NOW() 
+                WHERE user_id = ? 
+                    AND tier_id = ? 
+                    AND effective_to IS NULL
+            `, [userId, currentUserTier.tier_id]);
+
+            // Create new tier record
+            await pool.query(`
+                INSERT INTO user_tiers 
+                (user_id, tier_id, effective_from, current_portfolio_value, next_tier_requirement, progress_percentage)
+                VALUES (?, ?, NOW(), ?, ?, ?)
+            `, [userId, appropriateTier.id, newPortfolioValue, nextTierRequirement, progressPercentage]);
+        } else {
+            // Just update portfolio value
+            await pool.query(`
+                UPDATE user_tiers 
+                SET current_portfolio_value = ?, 
+                    next_tier_requirement = ?, 
+                    progress_percentage = ?,
+                    last_updated = NOW()
+                WHERE user_id = ? 
+                    AND tier_id = ? 
+                    AND effective_to IS NULL
+            `, [newPortfolioValue, nextTierRequirement, progressPercentage, userId, currentUserTier.tier_id]);
+        }
+
+        return res.json({
+            success: true,
+            message: 'Portfolio value updated successfully',
+            data: {
+                user_id: parseInt(userId),
+                old_portfolio_value: oldPortfolioValue,
+                new_portfolio_value: newPortfolioValue,
+                tier_upgraded: tierUpgraded,
+                current_tier: {
+                    id: appropriateTier.id,
+                    name: appropriateTier.name,
+                    minimum_portfolio_value: parseFloat(appropriateTier.minimum_portfolio_value),
+                    progress_percentage: progressPercentage
+                },
+                next_tier: nextTierResult.length > 0 ? {
+                    id: nextTierResult[0].id,
+                    name: nextTierResult[0].name,
+                    minimum_portfolio_value: parseFloat(nextTierResult[0].minimum_portfolio_value),
+                    remaining_to_next_tier: Math.max(0, parseFloat(nextTierResult[0].minimum_portfolio_value) - newPortfolioValue)
+                } : null
+            }
+        });
+
+    } catch (error) {
+        console.error('Error updating portfolio value:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to update portfolio value'
+        });
+    }
+});
 
 
 app.listen(5000,()=>{
