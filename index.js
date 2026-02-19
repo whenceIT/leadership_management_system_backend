@@ -572,7 +572,7 @@ app.get("/branch-stats", async (req, res) => {
 
         // Total pending loan transactions
         const [pendingTransactionsResult] = await pool.query(
-            `SELECT COUNT(*) as count FROM loan_transactions_pending WHERE office_id = ?`,
+            `SELECT COUNT(*) as count FROM loan_transactions WHERE office_id = ?`,
             [office_id]
         );
 
@@ -911,6 +911,108 @@ app.delete('/smart-alerts/:id', async (req, res) => {
       error: 'Failed to delete alert'
     });
   }
+});
+
+// Get loan consultant stats
+app.get("/loan-consultant-stats", async (req, res) => {
+    try {
+        const { start_date, end_date, office_id, province_id, user_id } = req.query;
+
+        // Build base WHERE clause
+        let baseWhere = "WHERE 1=1";
+        const params = [];
+
+        // Date range filter
+        if (start_date && end_date) {
+            baseWhere += ` AND l.created_at BETWEEN ? AND ?`;
+            params.push(start_date, end_date);
+        } else if (start_date) {
+            baseWhere += ` AND l.created_at >= ?`;
+            params.push(start_date);
+        } else if (end_date) {
+            baseWhere += ` AND l.created_at <= ?`;
+            params.push(end_date);
+        }
+
+        // Office filter
+        if (office_id) {
+            baseWhere += ` AND l.office_id = ?`;
+            params.push(office_id);
+        }
+
+        // Province filter (join with offices table)
+        let provinceJoin = '';
+        if (province_id) {
+            provinceJoin = ` JOIN offices o ON l.office_id = o.id`;
+            baseWhere += ` AND o.province_id = ?`;
+            params.push(province_id);
+        }
+
+        // User/Loan Officer filter
+        if (user_id) {
+            baseWhere += ` AND l.loan_officer_id = ?`;
+            params.push(user_id);
+        }
+
+        // New Applications (status = 'pending')
+        const [newApplicationsResult] = await pool.query(
+            `SELECT COUNT(*) as count FROM loans l ${provinceJoin} ${baseWhere} AND l.status = 'pending'`,
+            params
+        );
+
+        // Under Review (status = 'under_review' and created_at > 3 days)
+        const [underReviewResult] = await pool.query(
+            `SELECT COUNT(*) as count FROM loans l ${provinceJoin} ${baseWhere} AND l.status = 'pending' AND l.created_at < DATE_SUB(NOW(), INTERVAL 3 DAY)`,
+            params
+        );
+
+        // Approved (status = 'approved')
+        const [approvedResult] = await pool.query(
+            `SELECT COUNT(*) as count FROM loans l ${provinceJoin} ${baseWhere} AND l.status = 'approved'`,
+            params
+        );
+
+        // Disbursed (status = 'disbursed')
+        const [disbursedResult] = await pool.query(
+            `SELECT COUNT(*) as count FROM loans l ${provinceJoin} ${baseWhere} AND l.status = 'disbursed'`,
+            params
+        );
+
+        // Total Loans
+        const [totalLoansResult] = await pool.query(
+            `SELECT COUNT(*) as count FROM loans l ${provinceJoin} ${baseWhere}`,
+            params
+        );
+
+        // Pending Loans (status = 'pending' or 'new' or 'under_review')
+        const [pendingLoansResult] = await pool.query(
+            `SELECT COUNT(*) as count FROM loans l ${provinceJoin} ${baseWhere} AND l.status IN ('pending', 'new', 'under_review')`,
+            params
+        );
+
+        // Declined (status = 'declined' or 'rejected')
+        const [declinedResult] = await pool.query(
+            `SELECT COUNT(*) as count FROM loans l ${provinceJoin} ${baseWhere} AND l.status IN ('declined', 'rejected')`,
+            params
+        );
+
+        return res.json({
+            success: true,
+            data: {
+                new_applications: newApplicationsResult[0].count,
+                under_review: underReviewResult[0].count,
+                approved: approvedResult[0].count,
+                disbursed: disbursedResult[0].count,
+                total_loans: totalLoansResult[0].count,
+                pending_loans: pendingLoansResult[0].count,
+                declined: declinedResult[0].count
+            }
+        });
+
+    } catch (err) {
+        console.log(err);
+        res.status(500).json({ error: "Failed to fetch loan consultant stats" });
+    }
 });
 
 /**
