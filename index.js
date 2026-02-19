@@ -501,6 +501,465 @@ app.get("/staffbyPosition", async (req, res) => {
     }
 });
 
+// Get branch stats by office_id
+app.get("/branch-stats", async (req, res) => {
+    try {
+        const { office_id } = req.query;
+
+        if (!office_id) {
+            return res.status(400).json({ error: "office_id is required" });
+        }
+
+        // Total staff (active users)
+        const [totalStaffResult] = await pool.query(
+            `SELECT COUNT(*) as count FROM users WHERE office_id = ? AND status = 'Active'`,
+            [office_id]
+        );
+
+        // Total staff on leave (approved leave_days)
+        const [staffOnLeaveResult] = await pool.query(
+            `SELECT COUNT(DISTINCT user_id) as count FROM leave_days WHERE office_id = ? AND status = 'approved'`,
+            [office_id]
+        );
+
+        // Total pending loans
+        const [pendingLoansResult] = await pool.query(
+            `SELECT COUNT(*) as count FROM loans WHERE office_id = ? AND status = 'pending'`,
+            [office_id]
+        );
+
+        // Total disbursed loans
+        const [disbursedLoansResult] = await pool.query(
+            `SELECT COUNT(*) as count FROM loans WHERE office_id = ? AND status = 'disbursed'`,
+            [office_id]
+        );
+
+        // Total active clients
+        const [activeClientsResult] = await pool.query(
+            `SELECT COUNT(*) as count FROM clients WHERE office_id = ? AND status = 'active'`,
+            [office_id]
+        );
+
+        // Total pending advances
+        const [pendingAdvancesResult] = await pool.query(
+            `SELECT COUNT(*) as count FROM advances WHERE office_id = ? AND status = 'pending'`,
+            [office_id]
+        );
+
+        // Total approved advances
+        const [approvedAdvancesResult] = await pool.query(
+            `SELECT COUNT(*) as count FROM advances WHERE office_id = ? AND status = 'approved'`,
+            [office_id]
+        );
+
+        // Total pending expenses
+        const [pendingExpensesResult] = await pool.query(
+            `SELECT COUNT(*) as count FROM expenses WHERE office_id = ? AND status = 'pending'`,
+            [office_id]
+        );
+
+        // Total tickets open
+        const [openTicketsResult] = await pool.query(
+            `SELECT COUNT(*) as count FROM tickets WHERE status = 'open'`,
+            []
+        );
+
+        // Total loan portfolio (sum of principal for disbursed loans)
+        const [loanPortfolioResult] = await pool.query(
+            `SELECT COALESCE(SUM(principal), 0) as total FROM loans WHERE office_id = ? AND status = 'disbursed'`,
+            [office_id]
+        );
+
+        // Total pending loan transactions
+        const [pendingTransactionsResult] = await pool.query(
+            `SELECT COUNT(*) as count FROM loan_transactions_pending WHERE office_id = ?`,
+            [office_id]
+        );
+
+        return res.json({
+            success: true,
+            data: {
+                office_id: parseInt(office_id),
+                total_staff: totalStaffResult[0].count,
+                staff_on_leave: staffOnLeaveResult[0].count,
+                pending_loans: pendingLoansResult[0].count,
+                disbursed_loans: disbursedLoansResult[0].count,
+                active_clients: activeClientsResult[0].count,
+                pending_advances: pendingAdvancesResult[0].count,
+                approved_advances: approvedAdvancesResult[0].count,
+                pending_expenses: pendingExpensesResult[0].count,
+                open_tickets: openTicketsResult[0].count,
+                loan_portfolio: loanPortfolioResult[0].total,
+                pending_transactions: pendingTransactionsResult[0].count
+            }
+        });
+
+    } catch (err) {
+        console.log(err);
+        res.status(500).json({ error: "Failed to fetch branch stats" });
+    }
+});
+
+/**
+ * GET /smart-alerts
+ * Fetch alerts with filtering support
+ */
+app.get('/smart-alerts', async (req, res) => {
+  try {
+    const {
+      user_id,
+      position_id,
+      office_id,
+      kpi_id,
+      type,
+      priority,
+      category,
+      unread_only = 'true',
+      limit = 50
+    } = req.query;
+
+    // Build the query
+    let sql = `
+      SELECT * FROM smart_alerts 
+      WHERE is_dismissed = 0 
+        AND (expires_at IS NULL OR expires_at > NOW())
+    `;
+    const params = [];
+
+    // Add filters
+    if (user_id || position_id || office_id) {
+      sql += ` AND (`;
+      const orConditions = [];
+      
+      if (user_id) {
+        orConditions.push(`user_id = ?`);
+        params.push(parseInt(user_id));
+      }
+      if (position_id) {
+        orConditions.push(`position_id = ?`);
+        params.push(parseInt(position_id));
+      }
+      if (office_id) {
+        orConditions.push(`office_id = ?`);
+        params.push(parseInt(office_id));
+      }
+      
+      sql += orConditions.join(' OR ') + `)`;
+    }
+
+    if (kpi_id) {
+      sql += ` AND kpi_id = ?`;
+      params.push(parseInt(kpi_id));
+    }
+
+    if (type) {
+      sql += ` AND type = ?`;
+      params.push(type);
+    }
+
+    if (priority) {
+      sql += ` AND priority = ?`;
+      params.push(priority);
+    }
+
+    if (category) {
+      sql += ` AND category = ?`;
+      params.push(category);
+    }
+
+    if (unread_only === 'true') {
+      sql += ` AND is_read = 0`;
+    }
+
+    // Order by priority and date
+    sql += `
+      ORDER BY 
+        FIELD(priority, 'critical', 'high', 'medium', 'low'),
+        created_at DESC
+      LIMIT ?
+    `;
+    params.push(parseInt(limit));
+
+    const [alerts] = await pool.query(sql, params);
+
+    res.json({
+      success: true,
+      data: alerts,
+      count: alerts.length
+    });
+
+  } catch (error) {
+    console.error('Error fetching alerts:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch alerts'
+    });
+  }
+});
+
+/**
+ * POST /smart-alerts
+ * Create a new alert
+ */
+app.post('/smart-alerts', async (req, res) => {
+  try {
+    const {
+      type = 'info',
+      priority = 'medium',
+      message,
+      title,
+      category,
+      source = 'system',
+      kpi_id,
+      position_id,
+      office_id,
+      province_id,
+      user_id,
+      action_url,
+      action_label,
+      expires_at,
+      metadata
+    } = req.body;
+
+    if (!message) {
+      return res.status(400).json({
+        success: false,
+        error: 'Message is required'
+      });
+    }
+
+    const [result] = await pool.query(
+      `INSERT INTO smart_alerts 
+        (type, priority, message, title, category, source, kpi_id, position_id, office_id, 
+         province_id, user_id, action_url, action_label, expires_at, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [type, priority, message, title, category, source, kpi_id, position_id, office_id,
+       province_id, user_id, action_url, action_label, expires_at, 
+       metadata ? JSON.stringify(metadata) : null]
+    );
+
+    // Fetch the inserted row
+    const [newAlert] = await pool.query(
+      `SELECT * FROM smart_alerts WHERE id = ?`,
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      data: newAlert[0],
+      message: 'Alert created successfully'
+    });
+
+  } catch (error) {
+    console.error('Error creating alert:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create alert'
+    });
+  }
+});
+
+/**
+ * GET /smart-alerts/:id
+ * Get a single alert by id
+ */
+app.get('/smart-alerts/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [alerts] = await pool.query(
+      `SELECT * FROM smart_alerts WHERE id = ?`,
+      [id]
+    );
+
+    if (alerts.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Alert not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: alerts[0]
+    });
+
+  } catch (error) {
+    console.error('Error fetching alert:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch alert'
+    });
+  }
+});
+
+/**
+ * PATCH /smart-alerts/:id
+ * Update alert status (mark as read, dismiss, etc.)
+ */
+app.patch('/smart-alerts/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { is_read, is_dismissed, type, priority, message, title, category } = req.body;
+
+    const updates = [];
+    const params = [];
+
+    if (typeof is_read !== 'undefined') {
+      updates.push('is_read = ?');
+      params.push(is_read ? 1 : 0);
+    }
+
+    if (typeof is_dismissed !== 'undefined') {
+      updates.push('is_dismissed = ?');
+      params.push(is_dismissed ? 1 : 0);
+    }
+
+    if (type) {
+      updates.push('type = ?');
+      params.push(type);
+    }
+
+    if (priority) {
+      updates.push('priority = ?');
+      params.push(priority);
+    }
+
+    if (message) {
+      updates.push('message = ?');
+      params.push(message);
+    }
+
+    if (title) {
+      updates.push('title = ?');
+      params.push(title);
+    }
+
+    if (category) {
+      updates.push('category = ?');
+      params.push(category);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No valid update fields provided'
+      });
+    }
+
+    params.push(id);
+
+    const [result] = await pool.query(
+      `UPDATE smart_alerts SET ${updates.join(', ')} WHERE id = ?`,
+      params
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Alert not found'
+      });
+    }
+
+    // Fetch the updated alert
+    const [updatedAlert] = await pool.query(
+      `SELECT * FROM smart_alerts WHERE id = ?`,
+      [id]
+    );
+
+    res.json({
+      success: true,
+      data: updatedAlert[0],
+      message: 'Alert updated successfully'
+    });
+
+  } catch (error) {
+    console.error('Error updating alert:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update alert'
+    });
+  }
+});
+
+/**
+ * DELETE /smart-alerts/:id
+ * Delete an alert
+ */
+app.delete('/smart-alerts/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [result] = await pool.query('DELETE FROM smart_alerts WHERE id = ?', [id]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Alert not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Alert deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Error deleting alert:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete alert'
+    });
+  }
+});
+
+/**
+ * POST /smart-alerts/mark-all-read
+ * Mark all alerts as read for a user/position
+ */
+app.post('/smart-alerts/mark-all-read', async (req, res) => {
+  try {
+    const { user_id, position_id, office_id } = req.body;
+
+    let sql = `UPDATE smart_alerts SET is_read = 1 WHERE is_read = 0`;
+    const params = [];
+
+    if (user_id || position_id || office_id) {
+      sql += ` AND (`;
+      const orConditions = [];
+      
+      if (user_id) {
+        orConditions.push(`user_id = ?`);
+        params.push(user_id);
+      }
+      if (position_id) {
+        orConditions.push(`position_id = ?`);
+        params.push(position_id);
+      }
+      if (office_id) {
+        orConditions.push(`office_id = ?`);
+        params.push(office_id);
+      }
+      
+      sql += orConditions.join(' OR ') + `)`;
+    }
+
+    const [result] = await pool.query(sql, params);
+
+    res.json({
+      success: true,
+      message: `${result.affectedRows} alerts marked as read`
+    });
+
+  } catch (error) {
+    console.error('Error marking all alerts as read:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to mark all alerts as read'
+    });
+  }
+});
+
 
 
 
