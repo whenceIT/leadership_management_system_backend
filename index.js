@@ -1447,6 +1447,155 @@ app.put('/user-tiers/:userId/portfolio', async (req, res) => {
 });
 
 
+// API endpoint to get audit logs with loan and client information
+app.get('/audit-logs/:user_id', async (req, res) => {
+    try {
+        const { user_id } = req.params;
+        
+        // Query to join audit logs with loans, clients and loan transactions
+        const query = `
+            SELECT 
+                al.id as audit_log_id,
+                al.user_id as audit_user_id,
+                al.name as audit_name,
+                al.office_id as audit_office_id,
+                al.module as audit_module,
+                al.action as audit_action,
+                al.notes as audit_notes,
+                al.created_at as audit_created_at,
+                
+                l.id as loan_id,
+                l.client_id as loan_client_id,
+                l.office_id as loan_office_id,
+                l.loan_officer_id as loan_officer_id,
+                l.principal as loan_principal,
+                l.status as loan_status,
+                l.created_at as loan_created_at,
+                
+                c.id as client_id,
+                c.first_name as client_first_name,
+                c.last_name as client_last_name,
+                c.full_name as client_full_name,
+                c.mobile as client_mobile,
+                c.email as client_email,
+                c.status as client_status,
+                c.created_at as client_created_at,
+                
+                lt.id as loan_transaction_id,
+                lt.transaction_type as loan_transaction_type,
+                lt.amount as loan_transaction_amount,
+                lt.principal as loan_transaction_principal,
+                lt.interest as loan_transaction_interest,
+                lt.fee as loan_transaction_fee,
+                lt.penalty as loan_transaction_penalty,
+                lt.date as loan_transaction_date,
+                lt.created_at as loan_transaction_created_at
+            
+            FROM audit_trail al
+            LEFT JOIN loans l ON al.user_id = l.loan_officer_id
+            LEFT JOIN clients c ON l.client_id = c.id
+            LEFT JOIN loan_transactions lt ON l.id = lt.loan_id
+            WHERE al.user_id = ?
+            ORDER BY al.created_at DESC
+        `;
+        
+        const [results] = await pool.query(query, [user_id]);
+        
+        // Group results by audit log and aggregate related data
+        const auditLogs = {};
+        results.forEach(row => {
+            const auditLogId = row.audit_log_id;
+            
+            if (!auditLogs[auditLogId]) {
+                auditLogs[auditLogId] = {
+                    id: row.audit_log_id,
+                    user_id: row.audit_user_id,
+                    name: row.audit_name,
+                    office_id: row.audit_office_id,
+                    module: row.audit_module,
+                    action: row.audit_action,
+                    notes: row.audit_notes,
+                    created_at: row.audit_created_at,
+                    loans: []
+                };
+            }
+            
+            if (row.loan_id) {
+                // Check if this loan is already added to avoid duplicates
+                const existingLoan = auditLogs[auditLogId].loans.find(loan => 
+                    loan.id === row.loan_id
+                );
+                
+                if (!existingLoan) {
+                    auditLogs[auditLogId].loans.push({
+                        id: row.loan_id,
+                        client_id: row.loan_client_id,
+                        office_id: row.loan_office_id,
+                        loan_officer_id: row.loan_officer_id,
+                        principal: row.loan_principal,
+                        status: row.loan_status,
+                        created_at: row.loan_created_at,
+                        client: {
+                            id: row.client_id,
+                            first_name: row.client_first_name,
+                            last_name: row.client_last_name,
+                            full_name: row.client_full_name,
+                            mobile: row.client_mobile,
+                            email: row.client_email,
+                            status: row.client_status,
+                            created_at: row.client_created_at
+                        },
+                        transactions: []
+                    });
+                }
+                
+                // Add transaction to the corresponding loan
+                const loanIndex = auditLogs[auditLogId].loans.findIndex(loan => 
+                    loan.id === row.loan_id
+                );
+                
+                if (row.loan_transaction_id && loanIndex !== -1) {
+                    // Check if this transaction is already added to avoid duplicates
+                    const existingTransaction = auditLogs[auditLogId].loans[loanIndex].transactions.find(
+                        transaction => transaction.id === row.loan_transaction_id
+                    );
+                    
+                    if (!existingTransaction) {
+                        auditLogs[auditLogId].loans[loanIndex].transactions.push({
+                            id: row.loan_transaction_id,
+                            transaction_type: row.loan_transaction_type,
+                            amount: row.loan_transaction_amount,
+                            principal: row.loan_transaction_principal,
+                            interest: row.loan_transaction_interest,
+                            fee: row.loan_transaction_fee,
+                            penalty: row.loan_transaction_penalty,
+                            date: row.loan_transaction_date,
+                            created_at: row.loan_transaction_created_at
+                        });
+                    }
+                }
+            }
+        });
+        
+        // Convert to array
+        const auditLogsArray = Object.values(auditLogs);
+        
+        res.json({
+            success: true,
+            user_id: parseInt(user_id),
+            total_audit_logs: auditLogsArray.length,
+            data: auditLogsArray
+        });
+        
+    } catch (err) {
+        console.log(err);
+        res.status(500).json({ 
+            error: "Failed to fetch audit logs", 
+            message: err.message 
+        });
+    }
+});
+
 app.listen(5000,()=>{
     console.log('Server is up and running');
 })
