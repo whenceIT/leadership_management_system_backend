@@ -1505,6 +1505,1149 @@ app.get('/audit-logs/:user_id', async (req, res) => {
     }
 });
 
+/**
+ * GET /month1-default-rate
+ * Calculate Month-1 Default Rate for a branch/office
+ * 
+ * Query Parameters:
+ * - office_id (required): Branch office ID
+ * - period_start (optional): Start date for the period (YYYY-MM-DD)
+ * - period_end (optional): End date for the period (YYYY-MM-DD)
+ * 
+ * Formula: (Number of Loans Defaulted in Month 1 / Total Loans Disbursed in the Period) × 100
+ */
+app.get('/month1-default-rate', async (req, res) => {
+    try {
+        const { office_id, period_start, period_end } = req.query;
+
+        // Validation
+        if (!office_id) {
+            return res.status(400).json({
+                success: false,
+                error: "office_id is required"
+            });
+        }
+
+        // Set default period to current month if not provided
+        const today = new Date();
+        const currentMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+        const currentMonthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+        
+        const startDate = period_start || currentMonthStart.toISOString().split('T')[0];
+        const endDate = period_end || currentMonthEnd.toISOString().split('T')[0];
+
+        // Calculate previous month for trend comparison
+        const prevMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+        const prevMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
+        const prevStartDate = prevMonthStart.toISOString().split('T')[0];
+        const prevEndDate = prevMonthEnd.toISOString().split('T')[0];
+
+        // Query for current period - Loans that defaulted within 30 days of disbursement
+        // A loan is considered "Month-1 Default" if:
+        // 1. Status is 'written_off' and was written off within 30 days of disbursement, OR
+        // 2. Status is 'disbursed' but has arrears >= 30 days (calculated from repayment schedule)
+        const [currentPeriodResult] = await pool.query(`
+            SELECT 
+                COUNT(*) AS total_disbursed,
+                SUM(CASE 
+                    WHEN l.status = 'written_off' 
+                         AND DATEDIFF(l.written_off_date, l.disbursement_date) <= 30 
+                    THEN 1 
+                    WHEN l.status = 'disbursed' 
+                         AND EXISTS (
+                             SELECT 1 FROM loan_repayment_schedules lrs 
+                             WHERE lrs.loan_id = l.id 
+                               AND lrs.paid = 0 
+                               AND DATEDIFF(CURDATE(), lrs.due_date) >= 30
+                         )
+                    THEN 1
+                    ELSE 0 
+                END) AS defaulted_in_month1
+            FROM loans l
+            WHERE l.office_id = ?
+              AND l.disbursement_date BETWEEN ? AND ?
+              AND l.status IN ('disbursed', 'written_off', 'closed', 'paid')
+        `, [office_id, startDate, endDate]);
+
+        // Query for previous period (for trend comparison)
+        const [prevPeriodResult] = await pool.query(`
+            SELECT 
+                COUNT(*) AS total_disbursed,
+                SUM(CASE 
+                    WHEN l.status = 'written_off' 
+                         AND DATEDIFF(l.written_off_date, l.disbursement_date) <= 30 
+                    THEN 1 
+                    WHEN l.status = 'disbursed' 
+                         AND EXISTS (
+                             SELECT 1 FROM loan_repayment_schedules lrs 
+                             WHERE lrs.loan_id = l.id 
+                               AND lrs.paid = 0 
+                               AND DATEDIFF(CURDATE(), lrs.due_date) >= 30
+                         )
+                    THEN 1
+                    ELSE 0 
+                END) AS defaulted_in_month1
+            FROM loans l
+            WHERE l.office_id = ?
+              AND l.disbursement_date BETWEEN ? AND ?
+              AND l.status IN ('disbursed', 'written_off', 'closed', 'paid')
+        `, [office_id, prevStartDate, prevEndDate]);
+
+        // Calculate rates
+        const currentTotal = currentPeriodResult[0].total_disbursed || 0;
+        const currentDefaults = currentPeriodResult[0].defaulted_in_month1 || 0;
+        const currentRate = currentTotal > 0 ? ((currentDefaults / currentTotal) * 100).toFixed(2) : 0;
+
+        const prevTotal = prevPeriodResult[0].total_disbursed || 0;
+        const prevDefaults = prevPeriodResult[0].defaulted_in_month1 || 0;
+        const prevRate = prevTotal > 0 ? ((prevDefaults / prevTotal) * 100).toFixed(2) : 0;
+
+        // Calculate change from last month
+        const changeFromLastMonth = (parseFloat(currentRate) - parseFloat(prevRate)).toFixed(2);
+        const trendDirection = parseFloat(changeFromLastMonth) < 0 ? 'decrease' : 
+                               parseFloat(changeFromLastMonth) > 0 ? 'increase' : 'no_change';
+
+        // Get detailed breakdown of defaulted loans
+        const [defaultedLoansDetails] = await pool.query(`
+            SELECT 
+                l.id AS loan_id,
+                l.account_number,
+                l.principal,
+                l.disbursement_date,
+                l.status,
+                c.first_name AS client_first_name,
+                c.last_name AS client_last_name,
+                c.mobile AS client_mobile,
+                DATEDIFF(CURDATE(), l.disbursement_date) AS days_since_disbursement,
+                CASE 
+                    WHEN l.status = 'written_off' THEN DATEDIFF(l.written_off_date, l.disbursement_date)
+                    ELSE (SELECT MIN(DATEDIFF(CURDATE(), lrs.due_date)) 
+                          FROM loan_repayment_schedules lrs 
+                          WHERE lrs.loan_id = l.id AND lrs.paid = 0 AND DATEDIFF(CURDATE(), lrs.due_date) >= 30)
+                END AS days_to_default
+            FROM loans l
+            LEFT JOIN clients c ON l.client_id = c.id
+            WHERE l.office_id = ?
+              AND l.disbursement_date BETWEEN ? AND ?
+              AND (
+                  (l.status = 'written_off' AND DATEDIFF(l.written_off_date, l.disbursement_date) <= 30)
+                  OR (l.status = 'disbursed' AND EXISTS (
+                      SELECT 1 FROM loan_repayment_schedules lrs 
+                      WHERE lrs.loan_id = l.id 
+                        AND lrs.paid = 0 
+                        AND DATEDIFF(CURDATE(), lrs.due_date) >= 30
+                  ))
+              )
+            ORDER BY l.disbursement_date DESC
+        `, [office_id, startDate, endDate]);
+
+        // Response
+        return res.json({
+            success: true,
+            data: {
+                metric: "Month-1 Default Rate",
+                office_id: parseInt(office_id),
+                period: {
+                    start_date: startDate,
+                    end_date: endDate
+                },
+                current_period: {
+                    total_disbursed: currentTotal,
+                    defaulted_in_month1: currentDefaults,
+                    default_rate: parseFloat(currentRate),
+                    formatted_rate: `${currentRate}%`
+                },
+                previous_period: {
+                    start_date: prevStartDate,
+                    end_date: prevEndDate,
+                    total_disbursed: prevTotal,
+                    defaulted_in_month1: prevDefaults,
+                    default_rate: parseFloat(prevRate),
+                    formatted_rate: `${prevRate}%`
+                },
+                trend: {
+                    change_from_last_month: parseFloat(changeFromLastMonth),
+                    direction: trendDirection,
+                    formatted_change: `${changeFromLastMonth > 0 ? '+' : ''}${changeFromLastMonth}% from last month`,
+                    improvement: parseFloat(changeFromLastMonth) < 0
+                },
+                benchmark: {
+                    target_rate: 3.0,
+                    status: parseFloat(currentRate) <= 3.0 ? 'on_target' : 'above_target',
+                    variance_from_target: (parseFloat(currentRate) - 3.0).toFixed(2)
+                },
+                defaulted_loans: defaultedLoansDetails
+            }
+        });
+
+    } catch (err) {
+        console.error('Error calculating Month-1 Default Rate:', err);
+        return res.status(500).json({
+            success: false,
+            error: "Failed to calculate Month-1 Default Rate",
+            message: err.message
+        });
+    }
+});
+
+/**
+ * GET /collections-rate
+ * Calculate Collections Rate for a branch/office
+ * 
+ * Query Parameters:
+ * - office_id (required): Branch office ID
+ * - period_start (optional): Start date for the period (YYYY-MM-DD)
+ * - period_end (optional): End date for the period (YYYY-MM-DD)
+ * - target_rate (optional): Target collections rate (default: 93.0)
+ * 
+ * Formula: Collections Rate = (Total Amount Collected / Total Amount Due for Collection) × 100
+ */
+app.get('/collections-rate', async (req, res) => {
+    try {
+        const { office_id, period_start, period_end, target_rate } = req.query;
+
+        // Validation
+        if (!office_id) {
+            return res.status(400).json({
+                success: false,
+                error: "office_id is required"
+            });
+        }
+
+        // Set default period to current month if not provided
+        const today = new Date();
+        const currentMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+        const currentMonthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+        
+        const startDate = period_start || currentMonthStart.toISOString().split('T')[0];
+        const endDate = period_end || currentMonthEnd.toISOString().split('T')[0];
+        const targetRate = parseFloat(target_rate) || 93.0;
+
+        // Calculate previous period for trend comparison
+        const prevMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+        const prevMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
+        const prevStartDate = prevMonthStart.toISOString().split('T')[0];
+        const prevEndDate = prevMonthEnd.toISOString().split('T')[0];
+
+        // Main query for current period collections
+        // Using loan_transactions for actual collections and loan_repayment_schedules for expected
+        const [currentPeriodResult] = await pool.query(`
+            SELECT 
+                COALESCE(SUM(
+                    lt.principal + lt.interest + lt.fee + lt.penalty
+                ), 0) AS total_collected,
+                COALESCE(SUM(
+                    lrs.total_due
+                ), 0) AS total_expected,
+                COUNT(DISTINCT lt.loan_id) AS loans_with_payments,
+                COUNT(DISTINCT lrs.loan_id) AS loans_with_due
+            FROM loans l
+            LEFT JOIN loan_transactions lt ON lt.loan_id = l.id
+                AND lt.transaction_type = 'repayment'
+                AND lt.date BETWEEN ? AND ?
+                AND lt.reversed = 0
+                AND lt.status = 'approved'
+            LEFT JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id
+                AND lrs.due_date BETWEEN ? AND ?
+            WHERE l.office_id = ?
+              AND l.status IN ('disbursed', 'closed', 'paid')
+        `, [startDate, endDate, startDate, endDate, office_id]);
+
+        // Query for previous period (for trend comparison)
+        const [prevPeriodResult] = await pool.query(`
+            SELECT 
+                COALESCE(SUM(
+                    lt.principal + lt.interest + lt.fee + lt.penalty
+                ), 0) AS total_collected,
+                COALESCE(SUM(
+                    lrs.total_due
+                ), 0) AS total_expected
+            FROM loans l
+            LEFT JOIN loan_transactions lt ON lt.loan_id = l.id
+                AND lt.transaction_type = 'repayment'
+                AND lt.date BETWEEN ? AND ?
+                AND lt.reversed = 0
+                AND lt.status = 'approved'
+            LEFT JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id
+                AND lrs.due_date BETWEEN ? AND ?
+            WHERE l.office_id = ?
+              AND l.status IN ('disbursed', 'closed', 'paid')
+        `, [prevStartDate, prevEndDate, prevStartDate, prevEndDate, office_id]);
+
+        // Alternative calculation using derived fields (more accurate)
+        const [derivedResult] = await pool.query(`
+            SELECT 
+                COALESCE(SUM(
+                    lt.principal_derived + lt.interest_derived + lt.fees_derived + lt.penalty_derived
+                ), 0) AS total_collected_derived,
+                COUNT(DISTINCT lt.id) AS transaction_count
+            FROM loan_transactions lt
+            JOIN loans l ON lt.loan_id = l.id
+            WHERE l.office_id = ?
+              AND lt.transaction_type = 'repayment'
+              AND lt.date BETWEEN ? AND ?
+              AND lt.reversed = 0
+              AND lt.status = 'approved'
+        `, [office_id, startDate, endDate]);
+
+        // Get expected collections from repayment schedules
+        const [expectedResult] = await pool.query(`
+            SELECT 
+                COALESCE(SUM(lrs.total_due), 0) AS total_expected,
+                COALESCE(SUM(lrs.principal), 0) AS principal_expected,
+                COALESCE(SUM(lrs.interest), 0) AS interest_expected,
+                COALESCE(SUM(lrs.fees), 0) AS fees_expected,
+                COALESCE(SUM(lrs.penalty), 0) AS penalty_expected,
+                COUNT(DISTINCT lrs.loan_id) AS loans_with_due,
+                COUNT(*) AS total_installments
+            FROM loan_repayment_schedules lrs
+            JOIN loans l ON lrs.loan_id = l.id
+            WHERE l.office_id = ?
+              AND lrs.due_date BETWEEN ? AND ?
+        `, [office_id, startDate, endDate]);
+
+        // Get collected amounts breakdown
+        const [collectedBreakdown] = await pool.query(`
+            SELECT 
+                COALESCE(SUM(lt.principal), 0) AS principal_collected,
+                COALESCE(SUM(lt.interest), 0) AS interest_collected,
+                COALESCE(SUM(lt.fee), 0) AS fees_collected,
+                COALESCE(SUM(lt.penalty), 0) AS penalty_collected,
+                COUNT(DISTINCT lt.loan_id) AS loans_collected,
+                COUNT(*) AS payment_count
+            FROM loan_transactions lt
+            JOIN loans l ON lt.loan_id = l.id
+            WHERE l.office_id = ?
+              AND lt.transaction_type = 'repayment'
+              AND lt.date BETWEEN ? AND ?
+              AND lt.reversed = 0
+              AND lt.status = 'approved'
+        `, [office_id, startDate, endDate]);
+
+        // Calculate rates
+        const currentCollected = parseFloat(currentPeriodResult[0].total_collected) || 0;
+        const currentExpected = parseFloat(currentPeriodResult[0].total_expected) || 0;
+        const currentRate = currentExpected > 0 ? ((currentCollected / currentExpected) * 100).toFixed(2) : 0;
+
+        const prevCollected = parseFloat(prevPeriodResult[0].total_collected) || 0;
+        const prevExpected = parseFloat(prevPeriodResult[0].total_expected) || 0;
+        const prevRate = prevExpected > 0 ? ((prevCollected / prevExpected) * 100).toFixed(2) : 0;
+
+        // Calculate change from target
+        const changeFromTarget = (parseFloat(currentRate) - targetRate).toFixed(2);
+        const changeFromLastMonth = (parseFloat(currentRate) - parseFloat(prevRate)).toFixed(2);
+
+        // Determine performance status
+        let performanceStatus = 'on_target';
+        if (parseFloat(currentRate) >= targetRate + 2) {
+            performanceStatus = 'exceeding_target';
+        } else if (parseFloat(currentRate) < targetRate - 5) {
+            performanceStatus = 'below_target';
+        } else if (parseFloat(currentRate) < targetRate) {
+            performanceStatus = 'near_target';
+        }
+
+        // Get daily collections trend for the period
+        const [dailyTrend] = await pool.query(`
+            SELECT 
+                lt.date,
+                SUM(lt.principal + lt.interest + lt.fee + lt.penalty) AS daily_collected,
+                COUNT(*) AS payment_count
+            FROM loan_transactions lt
+            JOIN loans l ON lt.loan_id = l.id
+            WHERE l.office_id = ?
+              AND lt.transaction_type = 'repayment'
+              AND lt.date BETWEEN ? AND ?
+              AND lt.reversed = 0
+              AND lt.status = 'approved'
+            GROUP BY lt.date
+            ORDER BY lt.date DESC
+        `, [office_id, startDate, endDate]);
+
+        // Get top performing loan officers for collections
+        const [officerPerformance] = await pool.query(`
+            SELECT 
+                u.id AS officer_id,
+                CONCAT(u.first_name, ' ', u.last_name) AS officer_name,
+                COUNT(DISTINCT lt.loan_id) AS loans_collected,
+                SUM(lt.principal + lt.interest + lt.fee + lt.penalty) AS total_collected,
+                SUM(lrs.total_due) AS total_expected,
+                CASE 
+                    WHEN SUM(lrs.total_due) > 0 
+                    THEN ROUND((SUM(lt.principal + lt.interest + lt.fee + lt.penalty) / SUM(lrs.total_due)) * 100, 2)
+                    ELSE 0 
+                END AS collection_rate
+            FROM loan_transactions lt
+            JOIN loans l ON lt.loan_id = l.id
+            JOIN users u ON l.loan_officer_id = u.id
+            LEFT JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id 
+                AND lrs.due_date BETWEEN ? AND ?
+            WHERE l.office_id = ?
+              AND lt.transaction_type = 'repayment'
+              AND lt.date BETWEEN ? AND ?
+              AND lt.reversed = 0
+              AND lt.status = 'approved'
+            GROUP BY u.id, u.first_name, u.last_name
+            ORDER BY total_collected DESC
+            LIMIT 10
+        `, [startDate, endDate, office_id, startDate, endDate]);
+
+        // Response
+        return res.json({
+            success: true,
+            data: {
+                metric: "Collections Rate",
+                office_id: parseInt(office_id),
+                period: {
+                    start_date: startDate,
+                    end_date: endDate
+                },
+                current_period: {
+                    total_collected: currentCollected,
+                    total_expected: currentExpected,
+                    collection_rate: parseFloat(currentRate),
+                    formatted_rate: `${currentRate}%`,
+                    loans_with_payments: currentPeriodResult[0].loans_with_payments,
+                    loans_with_due: currentPeriodResult[0].loans_with_due
+                },
+                previous_period: {
+                    start_date: prevStartDate,
+                    end_date: prevEndDate,
+                    total_collected: prevCollected,
+                    total_expected: prevExpected,
+                    collection_rate: parseFloat(prevRate),
+                    formatted_rate: `${prevRate}%`
+                },
+                breakdown: {
+                    principal: {
+                        collected: parseFloat(collectedBreakdown[0].principal_collected) || 0,
+                        expected: parseFloat(expectedResult[0].principal_expected) || 0
+                    },
+                    interest: {
+                        collected: parseFloat(collectedBreakdown[0].interest_collected) || 0,
+                        expected: parseFloat(expectedResult[0].interest_expected) || 0
+                    },
+                    fees: {
+                        collected: parseFloat(collectedBreakdown[0].fees_collected) || 0,
+                        expected: parseFloat(expectedResult[0].fees_expected) || 0
+                    },
+                    penalty: {
+                        collected: parseFloat(collectedBreakdown[0].penalty_collected) || 0,
+                        expected: parseFloat(expectedResult[0].penalty_expected) || 0
+                    }
+                },
+                trend: {
+                    change_from_last_month: parseFloat(changeFromLastMonth),
+                    change_from_target: parseFloat(changeFromTarget),
+                    formatted_change: `${changeFromTarget > 0 ? '+' : ''}${changeFromTarget}% from target`,
+                    direction: parseFloat(changeFromLastMonth) >= 0 ? 'improving' : 'declining'
+                },
+                target: {
+                    rate: targetRate,
+                    status: performanceStatus,
+                    variance: parseFloat(changeFromTarget),
+                    formatted_variance: `${changeFromTarget > 0 ? '+' : ''}${changeFromTarget}%`
+                },
+                summary: {
+                    total_loans_collected: collectedBreakdown[0].loans_collected,
+                    total_payment_count: collectedBreakdown[0].payment_count,
+                    total_installments_due: expectedResult[0].total_installments,
+                    average_payment_amount: collectedBreakdown[0].payment_count > 0 
+                        ? (currentCollected / collectedBreakdown[0].payment_count).toFixed(2) 
+                        : 0
+                },
+                daily_trend: dailyTrend,
+                officer_performance: officerPerformance
+            }
+        });
+
+    } catch (err) {
+        console.error('Error calculating Collections Rate:', err);
+        return res.status(500).json({
+            success: false,
+            error: "Failed to calculate Collections Rate",
+            message: err.message
+        });
+    }
+});
+
+/**
+ * GET /active-loans
+ * Get Active Loans count and details for a branch/office
+ * 
+ * Query Parameters:
+ * - office_id (required): Branch office ID
+ * - include_details (optional): Include detailed loan list (default: false)
+ * - loan_officer_id (optional): Filter by specific loan officer
+ * 
+ * Formula: Active Loans Count = COUNT(loans WHERE status = 'disbursed' AND office_id = :branch_id)
+ */
+app.get('/active-loans', async (req, res) => {
+    try {
+        const { office_id, include_details, loan_officer_id } = req.query;
+
+        // Validation
+        if (!office_id) {
+            return res.status(400).json({
+                success: false,
+                error: "office_id is required"
+            });
+        }
+
+        // Get current active loans count
+        const [activeLoansResult] = await pool.query(`
+            SELECT COUNT(*) AS active_loans_count
+            FROM loans
+            WHERE office_id = ?
+              AND status = 'disbursed'
+              ${loan_officer_id ? 'AND loan_officer_id = ?' : ''}
+        `, loan_officer_id ? [office_id, loan_officer_id] : [office_id]);
+
+        // Get active loans count from last week for comparison
+        const oneWeekAgo = new Date();
+        oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+        const oneWeekAgoStr = oneWeekAgo.toISOString().split('T')[0];
+
+        // Calculate weekly change (new disbursements - closed/written_off in the week)
+        const [weeklyChangeResult] = await pool.query(`
+            SELECT 
+                COUNT(CASE WHEN disbursement_date >= ? AND status = 'disbursed' THEN 1 END) AS new_disbursements,
+                COUNT(CASE WHEN (closed_date >= ? AND status IN ('closed', 'paid')) 
+                           OR (written_off_date >= ? AND status = 'written_off') THEN 1 END) AS closed_loans
+            FROM loans
+            WHERE office_id = ?
+              ${loan_officer_id ? 'AND loan_officer_id = ?' : ''}
+        `, loan_officer_id ? [oneWeekAgoStr, oneWeekAgoStr, oneWeekAgoStr, office_id, loan_officer_id] : 
+            [oneWeekAgoStr, oneWeekAgoStr, oneWeekAgoStr, office_id]);
+
+        const weeklyChange = (weeklyChangeResult[0].new_disbursements || 0) - (weeklyChangeResult[0].closed_loans || 0);
+
+        // Get total outstanding balance for active loans
+        const [outstandingResult] = await pool.query(`
+            SELECT 
+                COALESCE(SUM(l.principal_derived), 0) AS total_principal,
+                COALESCE(SUM(l.interest_derived), 0) AS total_interest,
+                COALESCE(SUM(l.fees_derived), 0) AS total_fees,
+                COALESCE(SUM(l.penalty_derived), 0) AS total_penalty,
+                COALESCE(SUM(
+                    COALESCE(l.principal_derived, 0) + 
+                    COALESCE(l.interest_derived, 0) + 
+                    COALESCE(l.fees_derived, 0) + 
+                    COALESCE(l.penalty_derived, 0)
+                ), 0) AS total_outstanding
+            FROM loans l
+            WHERE l.office_id = ?
+              AND l.status = 'disbursed'
+              ${loan_officer_id ? 'AND l.loan_officer_id = ?' : ''}
+        `, loan_officer_id ? [office_id, loan_officer_id] : [office_id]);
+
+        // Get outstanding balance from repayment schedules (more accurate)
+        const [scheduleOutstandingResult] = await pool.query(`
+            SELECT 
+                COALESCE(SUM(lrs.total_due), 0) AS total_due,
+                COALESCE(SUM(lrs.principal), 0) AS principal_due,
+                COALESCE(SUM(lrs.interest), 0) AS interest_due,
+                COALESCE(SUM(lrs.fees), 0) AS fees_due,
+                COALESCE(SUM(lrs.penalty), 0) AS penalty_due,
+                COALESCE(SUM(lrs.principal_paid), 0) AS principal_paid,
+                COALESCE(SUM(lrs.interest_paid), 0) AS interest_paid,
+                COALESCE(SUM(lrs.fees_paid), 0) AS fees_paid,
+                COALESCE(SUM(lrs.penalty_paid), 0) AS penalty_paid,
+                COALESCE(SUM(
+                    COALESCE(lrs.total_due, 0) - 
+                    COALESCE(lrs.principal_paid, 0) - 
+                    COALESCE(lrs.interest_paid, 0) - 
+                    COALESCE(lrs.fees_paid, 0) - 
+                    COALESCE(lrs.penalty_paid, 0)
+                ), 0) AS outstanding_balance
+            FROM loan_repayment_schedules lrs
+            JOIN loans l ON lrs.loan_id = l.id
+            WHERE l.office_id = ?
+              AND l.status = 'disbursed'
+              ${loan_officer_id ? 'AND l.loan_officer_id = ?' : ''}
+        `, loan_officer_id ? [office_id, loan_officer_id] : [office_id]);
+
+        // Get loan status breakdown
+        const [statusBreakdownResult] = await pool.query(`
+            SELECT 
+                status,
+                COUNT(*) AS count,
+                SUM(principal) AS total_principal
+            FROM loans
+            WHERE office_id = ?
+              ${loan_officer_id ? 'AND loan_officer_id = ?' : ''}
+            GROUP BY status
+        `, loan_officer_id ? [office_id, loan_officer_id] : [office_id]);
+
+        // Get loans by loan product
+        const [productBreakdownResult] = await pool.query(`
+            SELECT 
+                lp.id AS product_id,
+                lp.name AS product_name,
+                COUNT(l.id) AS loan_count,
+                SUM(l.principal) AS total_principal
+            FROM loans l
+            LEFT JOIN loan_products lp ON l.loan_product_id = lp.id
+            WHERE l.office_id = ?
+              AND l.status = 'disbursed'
+              ${loan_officer_id ? 'AND l.loan_officer_id = ?' : ''}
+            GROUP BY lp.id, lp.name
+            ORDER BY loan_count DESC
+        `, loan_officer_id ? [office_id, loan_officer_id] : [office_id]);
+
+        // Get loans by loan officer
+        const [officerBreakdownResult] = await pool.query(`
+            SELECT 
+                u.id AS officer_id,
+                CONCAT(u.first_name, ' ', u.last_name) AS officer_name,
+                COUNT(l.id) AS loan_count,
+                SUM(l.principal) AS total_principal,
+                AVG(l.principal) AS avg_loan_size
+            FROM loans l
+            JOIN users u ON l.loan_officer_id = u.id
+            WHERE l.office_id = ?
+              AND l.status = 'disbursed'
+            GROUP BY u.id, u.first_name, u.last_name
+            ORDER BY loan_count DESC
+        `, [office_id]);
+
+        // Get branch capacity info
+        const [branchInfoResult] = await pool.query(`
+            SELECT 
+                id, name, branch_capacity
+            FROM offices
+            WHERE id = ?
+        `, [office_id]);
+
+        const branchCapacity = branchInfoResult[0]?.branch_capacity || 0;
+        const activeLoansCount = activeLoansResult[0].active_loans_count || 0;
+        const capacityUtilization = branchCapacity > 0 ? ((activeLoansCount / branchCapacity) * 100).toFixed(1) : null;
+
+        // Build response object
+        let responseData = {
+            metric: "Active Loans",
+            office_id: parseInt(office_id),
+            office_name: branchInfoResult[0]?.name || null,
+            current_period: {
+                active_loans_count: activeLoansCount,
+                formatted_count: activeLoansCount.toLocaleString(),
+                weekly_change: weeklyChange,
+                formatted_weekly_change: `${weeklyChange >= 0 ? '+' : ''}${weeklyChange} this week`,
+                trend_direction: weeklyChange >= 0 ? 'growth' : 'decline'
+            },
+            outstanding_balance: {
+                total_outstanding: parseFloat(scheduleOutstandingResult[0].outstanding_balance) || 0,
+                principal_outstanding: parseFloat(scheduleOutstandingResult[0].principal_due) - parseFloat(scheduleOutstandingResult[0].principal_paid) || 0,
+                interest_outstanding: parseFloat(scheduleOutstandingResult[0].interest_due) - parseFloat(scheduleOutstandingResult[0].interest_paid) || 0,
+                fees_outstanding: parseFloat(scheduleOutstandingResult[0].fees_due) - parseFloat(scheduleOutstandingResult[0].fees_paid) || 0,
+                penalty_outstanding: parseFloat(scheduleOutstandingResult[0].penalty_due) - parseFloat(scheduleOutstandingResult[0].penalty_paid) || 0,
+                formatted_outstanding: formatCurrency(parseFloat(scheduleOutstandingResult[0].outstanding_balance) || 0)
+            },
+            capacity: {
+                branch_capacity: branchCapacity,
+                utilization_percentage: capacityUtilization ? parseFloat(capacityUtilization) : null,
+                remaining_capacity: branchCapacity > 0 ? Math.max(0, branchCapacity - activeLoansCount) : null,
+                status: capacityUtilization ? (parseFloat(capacityUtilization) >= 90 ? 'at_capacity' : 
+                        parseFloat(capacityUtilization) >= 75 ? 'near_capacity' : 'available') : 'unknown'
+            },
+            status_breakdown: statusBreakdownResult.map(row => ({
+                status: row.status,
+                count: row.count,
+                total_principal: parseFloat(row.total_principal) || 0
+            })),
+            product_breakdown: productBreakdownResult.map(row => ({
+                product_id: row.product_id,
+                product_name: row.product_name || 'Unknown',
+                loan_count: row.loan_count,
+                total_principal: parseFloat(row.total_principal) || 0
+            })),
+            officer_breakdown: officerBreakdownResult.map(row => ({
+                officer_id: row.officer_id,
+                officer_name: row.officer_name,
+                loan_count: row.loan_count,
+                total_principal: parseFloat(row.total_principal) || 0,
+                avg_loan_size: parseFloat(row.avg_loan_size) || 0
+            }))
+        };
+
+        // Include detailed loan list if requested
+        if (include_details === 'true') {
+            const [loanDetails] = await pool.query(`
+                SELECT 
+                    l.id AS loan_id,
+                    l.account_number,
+                    l.principal,
+                    l.interest_rate,
+                    l.disbursement_date,
+                    l.expected_maturity_date,
+                    l.loan_term,
+                    l.loan_term_type,
+                    DATEDIFF(CURDATE(), l.disbursement_date) AS days_since_disbursement,
+                    c.id AS client_id,
+                    CONCAT(c.first_name, ' ', c.last_name) AS client_name,
+                    c.mobile AS client_mobile,
+                    u.id AS officer_id,
+                    CONCAT(u.first_name, ' ', u.last_name) AS officer_name,
+                    lp.name AS product_name,
+                    (SELECT COALESCE(SUM(lrs.total_due - lrs.principal_paid - lrs.interest_paid - lrs.fees_paid - lrs.penalty_paid), 0)
+                     FROM loan_repayment_schedules lrs WHERE lrs.loan_id = l.id) AS outstanding_balance,
+                    (SELECT MIN(DATEDIFF(CURDATE(), lrs2.due_date))
+                     FROM loan_repayment_schedules lrs2 
+                     WHERE lrs2.loan_id = l.id AND lrs2.paid = 0 AND lrs2.due_date < CURDATE()) AS days_in_arrears
+                FROM loans l
+                LEFT JOIN clients c ON l.client_id = c.id
+                LEFT JOIN users u ON l.loan_officer_id = u.id
+                LEFT JOIN loan_products lp ON l.loan_product_id = lp.id
+                WHERE l.office_id = ?
+                  AND l.status = 'disbursed'
+                  ${loan_officer_id ? 'AND l.loan_officer_id = ?' : ''}
+                ORDER BY l.disbursement_date DESC
+            `, loan_officer_id ? [office_id, loan_officer_id] : [office_id]);
+
+            responseData.loan_details = loanDetails.map(loan => ({
+                ...loan,
+                principal: parseFloat(loan.principal) || 0,
+                interest_rate: parseFloat(loan.interest_rate) || 0,
+                outstanding_balance: parseFloat(loan.outstanding_balance) || 0,
+                days_in_arrears: loan.days_in_arrears || 0,
+                arrears_status: loan.days_in_arrears > 30 ? 'in_arrears' : 
+                               loan.days_in_arrears > 0 ? 'overdue' : 'current'
+            }));
+        }
+
+        // Response
+        return res.json({
+            success: true,
+            data: responseData
+        });
+
+    } catch (err) {
+        console.error('Error fetching Active Loans:', err);
+        return res.status(500).json({
+            success: false,
+            error: "Failed to fetch Active Loans",
+            message: err.message
+        });
+    }
+});
+
+/**
+ * GET /staff-productivity
+ * Calculate Staff Productivity for a branch/office
+ * 
+ * Query Parameters:
+ * - office_id (required): Branch office ID
+ * - period_start (optional): Start date for the period (YYYY-MM-DD)
+ * - period_end (optional): End date for the period (YYYY-MM-DD)
+ * - include_officers (optional): Include individual officer breakdown (default: true)
+ * 
+ * Formula: Staff Productivity = (Weighted Score of Individual KPIs) × 100
+ * Weights:
+ * - Disbursement Target Achievement: 40%
+ * - Collections Rate: 30%
+ * - Portfolio Quality / PAR: 20%
+ * - Client Acquisition: 10%
+ */
+app.get('/staff-productivity', async (req, res) => {
+    try {
+        const { office_id, period_start, period_end, include_officers } = req.query;
+
+        // Validation
+        if (!office_id) {
+            return res.status(400).json({
+                success: false,
+                error: "office_id is required"
+            });
+        }
+
+        // Set default period to current month if not provided
+        const today = new Date();
+        const currentMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+        const currentMonthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+        
+        const startDate = period_start || currentMonthStart.toISOString().split('T')[0];
+        const endDate = period_end || currentMonthEnd.toISOString().split('T')[0];
+
+        // Calculate previous period for trend comparison
+        const prevMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+        const prevMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
+        const prevStartDate = prevMonthStart.toISOString().split('T')[0];
+        const prevEndDate = prevMonthEnd.toISOString().split('T')[0];
+
+        // Get all active loan officers for the branch
+        const [loanOfficers] = await pool.query(`
+            SELECT 
+                u.id AS officer_id,
+                u.first_name,
+                u.last_name,
+                CONCAT(u.first_name, ' ', u.last_name) AS officer_name,
+                u.email
+            FROM users u
+            WHERE u.office_id = ?
+              AND u.status = 'Active'
+        `, [office_id]);
+
+        // Get disbursement targets from target_tracker
+        const [disbursementTargets] = await pool.query(`
+            SELECT 
+                tt.user_id,
+                tt.given_out AS actual_disbursement,
+                tt.target AS target_disbursement,
+                tt.cycle_date,
+                CASE 
+                    WHEN tt.target > 0 THEN ROUND((tt.given_out / tt.target) * 100, 2)
+                    ELSE 0 
+                END AS achievement_rate
+            FROM target_tracker tt
+            JOIN users u ON tt.user_id = u.id
+            WHERE u.office_id = ?
+              AND tt.cycle_date BETWEEN ? AND ?
+        `, [office_id, startDate, endDate]);
+
+        // Create a map of officer targets
+        const targetMap = {};
+        disbursementTargets.forEach(t => {
+            targetMap[t.user_id] = t;
+        });
+
+        // Get collections performance per officer
+        const [collectionsPerformance] = await pool.query(`
+            SELECT 
+                l.loan_officer_id,
+                COALESCE(SUM(lt.principal + lt.interest + lt.fee + lt.penalty), 0) AS total_collected,
+                COALESCE(SUM(lrs.total_due), 0) AS total_expected,
+                CASE 
+                    WHEN SUM(lrs.total_due) > 0 
+                    THEN ROUND((SUM(lt.principal + lt.interest + lt.fee + lt.penalty) / SUM(lrs.total_due)) * 100, 2)
+                    ELSE 0 
+                END AS collection_rate
+            FROM loans l
+            LEFT JOIN loan_transactions lt ON lt.loan_id = l.id
+                AND lt.transaction_type = 'repayment'
+                AND lt.date BETWEEN ? AND ?
+                AND lt.reversed = 0
+                AND lt.status = 'approved'
+            LEFT JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id
+                AND lrs.due_date BETWEEN ? AND ?
+            WHERE l.office_id = ?
+              AND l.status IN ('disbursed', 'closed', 'paid')
+            GROUP BY l.loan_officer_id
+        `, [startDate, endDate, startDate, endDate, office_id]);
+
+        // Create a map of collections performance
+        const collectionsMap = {};
+        collectionsPerformance.forEach(c => {
+            collectionsMap[c.loan_officer_id] = c;
+        });
+
+        // Get Portfolio at Risk (PAR) per officer
+        const [parPerformance] = await pool.query(`
+            SELECT 
+                l.loan_officer_id,
+                SUM(CASE WHEN arrears_days > 30 THEN outstanding_balance ELSE 0 END) AS par_balance,
+                SUM(outstanding_balance) AS total_portfolio,
+                CASE 
+                    WHEN SUM(outstanding_balance) > 0 
+                    THEN ROUND((SUM(CASE WHEN arrears_days > 30 THEN outstanding_balance ELSE 0 END) / SUM(outstanding_balance)) * 100, 2)
+                    ELSE 0 
+                END AS par_30_rate
+            FROM (
+                SELECT 
+                    l.loan_officer_id,
+                    l.id,
+                    DATEDIFF(CURRENT_DATE, MIN(lrs.due_date)) AS arrears_days,
+                    (lrs.total_due - COALESCE(lrs.principal_paid, 0) - COALESCE(lrs.interest_paid, 0) - COALESCE(lrs.fees_paid, 0) - COALESCE(lrs.penalty_paid, 0)) AS outstanding_balance
+                FROM loans l
+                JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id
+                WHERE l.status = 'disbursed'
+                  AND l.office_id = ?
+                  AND lrs.paid = 0
+                GROUP BY l.id, l.loan_officer_id
+            ) portfolio
+            GROUP BY loan_officer_id
+        `, [office_id]);
+
+        // Create a map of PAR performance
+        const parMap = {};
+        parPerformance.forEach(p => {
+            parMap[p.loan_officer_id] = p;
+        });
+
+        // Get client acquisition per officer
+        const [clientAcquisition] = await pool.query(`
+            SELECT 
+                c.staff_id AS officer_id,
+                COUNT(*) AS new_clients
+            FROM clients c
+            WHERE c.office_id = ?
+              AND c.status = 'active'
+              AND c.joined_date BETWEEN ? AND ?
+            GROUP BY c.staff_id
+        `, [office_id, startDate, endDate]);
+
+        // Create a map of client acquisition
+        const clientMap = {};
+        clientAcquisition.forEach(c => {
+            clientMap[c.officer_id] = c.new_clients;
+        });
+
+        // Get total active clients per officer for client target calculation
+        const [activeClientsPerOfficer] = await pool.query(`
+            SELECT 
+                c.staff_id AS officer_id,
+                COUNT(*) AS total_active_clients
+            FROM clients c
+            WHERE c.office_id = ?
+              AND c.status = 'active'
+            GROUP BY c.staff_id
+        `, [office_id]);
+
+        const activeClientsMap = {};
+        activeClientsPerOfficer.forEach(c => {
+            activeClientsMap[c.officer_id] = c.total_active_clients;
+        });
+
+        // Get previous period productivity for trend
+        const [prevDisbursementTargets] = await pool.query(`
+            SELECT 
+                tt.user_id,
+                tt.given_out AS actual_disbursement,
+                tt.target AS target_disbursement,
+                CASE 
+                    WHEN tt.target > 0 THEN ROUND((tt.given_out / tt.target) * 100, 2)
+                    ELSE 0 
+                END AS achievement_rate
+            FROM target_tracker tt
+            JOIN users u ON tt.user_id = u.id
+            WHERE u.office_id = ?
+              AND tt.cycle_date BETWEEN ? AND ?
+        `, [office_id, prevStartDate, prevEndDate]);
+
+        const prevTargetMap = {};
+        prevDisbursementTargets.forEach(t => {
+            prevTargetMap[t.user_id] = t;
+        });
+
+        // Get previous collections
+        const [prevCollections] = await pool.query(`
+            SELECT 
+                l.loan_officer_id,
+                COALESCE(SUM(lt.principal + lt.interest + lt.fee + lt.penalty), 0) AS total_collected,
+                COALESCE(SUM(lrs.total_due), 0) AS total_expected,
+                CASE 
+                    WHEN SUM(lrs.total_due) > 0 
+                    THEN ROUND((SUM(lt.principal + lt.interest + lt.fee + lt.penalty) / SUM(lrs.total_due)) * 100, 2)
+                    ELSE 0 
+                END AS collection_rate
+            FROM loans l
+            LEFT JOIN loan_transactions lt ON lt.loan_id = l.id
+                AND lt.transaction_type = 'repayment'
+                AND lt.date BETWEEN ? AND ?
+                AND lt.reversed = 0
+                AND lt.status = 'approved'
+            LEFT JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id
+                AND lrs.due_date BETWEEN ? AND ?
+            WHERE l.office_id = ?
+              AND l.status IN ('disbursed', 'closed', 'paid')
+            GROUP BY l.loan_officer_id
+        `, [prevStartDate, prevEndDate, prevStartDate, prevEndDate, office_id]);
+
+        const prevCollectionsMap = {};
+        prevCollections.forEach(c => {
+            prevCollectionsMap[c.loan_officer_id] = c;
+        });
+
+        // Calculate individual officer productivity scores
+        const officerScores = loanOfficers.map(officer => {
+            const officerId = officer.officer_id;
+            
+            // 1. Disbursement Target Achievement (40% weight)
+            const targetData = targetMap[officerId] || { achievement_rate: 0 };
+            const disbursementScore = Math.min(100, parseFloat(targetData.achievement_rate) || 0) * 0.40;
+            
+            // 2. Collections Rate (30% weight)
+            const collectionData = collectionsMap[officerId] || { collection_rate: 0 };
+            const collectionScore = Math.min(100, parseFloat(collectionData.collection_rate) || 0) * 0.30;
+            
+            // 3. Portfolio Quality / PAR (20% weight) - Lower PAR is better
+            const parData = parMap[officerId] || { par_30_rate: 0 };
+            const qualityScore = Math.max(0, (100 - (parseFloat(parData.par_30_rate) || 0))) * 0.20;
+            
+            // 4. Client Acquisition (10% weight)
+            const newClients = clientMap[officerId] || 0;
+            const totalActiveClients = activeClientsMap[officerId] || 0;
+            // Assume target is 10 new clients per month or based on existing client base
+            const clientTarget = Math.max(10, Math.ceil(totalActiveClients * 0.1));
+            const clientAcquisitionRate = Math.min(100, (newClients / clientTarget) * 100);
+            const acquisitionScore = clientAcquisitionRate * 0.10;
+            
+            // Total productivity score
+            const totalScore = disbursementScore + collectionScore + qualityScore + acquisitionScore;
+            
+            // Previous period scores
+            const prevTargetData = prevTargetMap[officerId] || { achievement_rate: 0 };
+            const prevDisbursementScore = Math.min(100, parseFloat(prevTargetData.achievement_rate) || 0) * 0.40;
+            
+            const prevCollectionData = prevCollectionsMap[officerId] || { collection_rate: 0 };
+            const prevCollectionScore = Math.min(100, parseFloat(prevCollectionData.collection_rate) || 0) * 0.30;
+            
+            const prevTotalScore = prevDisbursementScore + prevCollectionScore + qualityScore + acquisitionScore;
+            
+            return {
+                officer_id: officerId,
+                officer_name: officer.officer_name,
+                email: officer.email,
+                scores: {
+                    disbursement: {
+                        achievement_rate: parseFloat(targetData.achievement_rate) || 0,
+                        actual: parseFloat(targetData.actual_disbursement) || 0,
+                        target: parseFloat(targetData.target_disbursement) || 0,
+                        weighted_score: parseFloat(disbursementScore.toFixed(2)),
+                        weight: '40%'
+                    },
+                    collections: {
+                        rate: parseFloat(collectionData.collection_rate) || 0,
+                        collected: parseFloat(collectionData.total_collected) || 0,
+                        expected: parseFloat(collectionData.total_expected) || 0,
+                        weighted_score: parseFloat(collectionScore.toFixed(2)),
+                        weight: '30%'
+                    },
+                    portfolio_quality: {
+                        par_30_rate: parseFloat(parData.par_30_rate) || 0,
+                        par_balance: parseFloat(parData.par_balance) || 0,
+                        total_portfolio: parseFloat(parData.total_portfolio) || 0,
+                        weighted_score: parseFloat(qualityScore.toFixed(2)),
+                        weight: '20%'
+                    },
+                    client_acquisition: {
+                        new_clients: newClients,
+                        target: clientTarget,
+                        achievement_rate: parseFloat(clientAcquisitionRate.toFixed(2)),
+                        weighted_score: parseFloat(acquisitionScore.toFixed(2)),
+                        weight: '10%'
+                    }
+                },
+                total_score: parseFloat(totalScore.toFixed(2)),
+                previous_score: parseFloat(prevTotalScore.toFixed(2)),
+                change: parseFloat((totalScore - prevTotalScore).toFixed(2)),
+                rating: totalScore >= 90 ? 'Excellent' : 
+                        totalScore >= 80 ? 'Good' : 
+                        totalScore >= 70 ? 'Average' : 'Needs Improvement'
+            };
+        });
+
+        // Calculate branch average productivity
+        const totalProductivity = officerScores.reduce((sum, o) => sum + o.total_score, 0);
+        const avgProductivity = officerScores.length > 0 ? totalProductivity / officerScores.length : 0;
+        
+        // Calculate previous period average
+        const prevTotalProductivity = officerScores.reduce((sum, o) => sum + o.previous_score, 0);
+        const prevAvgProductivity = officerScores.length > 0 ? prevTotalProductivity / officerScores.length : 0;
+        
+        // Calculate improvement
+        const improvement = avgProductivity - prevAvgProductivity;
+
+        // Get branch info
+        const [branchInfoResult] = await pool.query(`
+            SELECT id, name FROM offices WHERE id = ?
+        `, [office_id]);
+
+        // Categorize officers by performance
+        const performanceCategories = {
+            excellent: officerScores.filter(o => o.total_score >= 90).length,
+            good: officerScores.filter(o => o.total_score >= 80 && o.total_score < 90).length,
+            average: officerScores.filter(o => o.total_score >= 70 && o.total_score < 80).length,
+            needs_improvement: officerScores.filter(o => o.total_score < 70).length
+        };
+
+        // Build response
+        const responseData = {
+            metric: "Staff Productivity",
+            office_id: parseInt(office_id),
+            office_name: branchInfoResult[0]?.name || null,
+            period: {
+                start_date: startDate,
+                end_date: endDate
+            },
+            current_period: {
+                productivity_score: parseFloat(avgProductivity.toFixed(2)),
+                formatted_score: `${avgProductivity.toFixed(1)}%`,
+                total_officers: officerScores.length,
+                improvement: parseFloat(improvement.toFixed(2)),
+                formatted_improvement: `${improvement >= 0 ? '+' : ''}${improvement.toFixed(1)}% improvement`,
+                trend_direction: improvement >= 0 ? 'improving' : 'declining'
+            },
+            previous_period: {
+                start_date: prevStartDate,
+                end_date: prevEndDate,
+                productivity_score: parseFloat(prevAvgProductivity.toFixed(2)),
+                formatted_score: `${prevAvgProductivity.toFixed(1)}%`
+            },
+            kpi_weights: {
+                disbursement_target: { weight: '40%', description: 'Disbursement Target Achievement' },
+                collections_rate: { weight: '30%', description: 'Collections Rate Performance' },
+                portfolio_quality: { weight: '20%', description: 'Portfolio Quality (Low PAR)' },
+                client_acquisition: { weight: '10%', description: 'New Client Acquisition' }
+            },
+            performance_summary: {
+                average_disbursement_rate: parseFloat((officerScores.reduce((sum, o) => sum + o.scores.disbursement.achievement_rate, 0) / (officerScores.length || 1)).toFixed(2)),
+                average_collection_rate: parseFloat((officerScores.reduce((sum, o) => sum + o.scores.collections.rate, 0) / (officerScores.length || 1)).toFixed(2)),
+                average_par_rate: parseFloat((officerScores.reduce((sum, o) => sum + o.scores.portfolio_quality.par_30_rate, 0) / (officerScores.length || 1)).toFixed(2)),
+                total_new_clients: officerScores.reduce((sum, o) => sum + o.scores.client_acquisition.new_clients, 0)
+            },
+            performance_categories: performanceCategories,
+            benchmark: {
+                target_score: 80,
+                status: avgProductivity >= 80 ? 'on_target' : 
+                        avgProductivity >= 70 ? 'near_target' : 'below_target',
+                variance_from_target: parseFloat((avgProductivity - 80).toFixed(2))
+            }
+        };
+
+        // Include individual officer breakdown if requested (default: true)
+        if (include_officers !== 'false') {
+            responseData.officer_breakdown = officerScores.sort((a, b) => b.total_score - a.total_score);
+            
+            // Add top performers
+            responseData.top_performers = officerScores
+                .sort((a, b) => b.total_score - a.total_score)
+                .slice(0, 5)
+                .map(o => ({
+                    officer_id: o.officer_id,
+                    officer_name: o.officer_name,
+                    score: o.total_score,
+                    rating: o.rating
+                }));
+            
+            // Add officers needing attention
+            responseData.needs_attention = officerScores
+                .filter(o => o.total_score < 70)
+                .map(o => ({
+                    officer_id: o.officer_id,
+                    officer_name: o.officer_name,
+                    score: o.total_score,
+                    primary_issue: o.scores.disbursement.achievement_rate < 50 ? 'Low Disbursement' :
+                                   o.scores.collections.rate < 70 ? 'Low Collections' :
+                                   o.scores.portfolio_quality.par_30_rate > 20 ? 'High PAR' : 'Multiple Areas'
+                }));
+        }
+
+        // Response
+        return res.json({
+            success: true,
+            data: responseData
+        });
+
+    } catch (err) {
+        console.error('Error calculating Staff Productivity:', err);
+        return res.status(500).json({
+            success: false,
+            error: "Failed to calculate Staff Productivity",
+            message: err.message
+        });
+    }
+});
+
 app.listen(5000,()=>{
     console.log('Server is up and running');
 })
