@@ -1,23 +1,27 @@
-# Branch Manager KPI Metrics Guide
+# Branch Manager KPI Metrics Documentation
 
-This document explains the Key Performance Indicators (KPIs) displayed on the Branch Manager Dashboard, including their formulas, database sources, and how they relate to the loan management system.
+This document explains the Key Performance Indicators (KPIs) for Branch Managers in the Loan Management System, including their formulas, database tables involved, and how they are calculated.
 
 ---
 
 ## Overview
 
-Branch managers are assigned to specific branches via the [`offices`](database-dictionary.md:1538) table (`manager_id` field). Each branch has clients (`clients.office_id`) and loans (`loans.office_id`) associated with it. These KPIs measure the performance of a branch manager's portfolio.
+Branch Managers are responsible for overseeing branch operations, including loan disbursements, collections, and managing loan officers. The following KPIs help measure their performance:
+
+| Metric | Target | Status Indicator |
+|--------|--------|------------------|
+| Monthly Disbursement | K450,000+ | ✓ On Track / ⚠ At Risk / ✗ Below Target |
+| Month-1 Default Rate | ≤25% | ✓ On Track / ⚠ At Risk |
+| Recovery Rate (Month-4) | ≥65% | ✓ On Track / ⚠ At Risk |
+| LCs at K50K+ Tier | ≥40% | ✓ On Track / ⚠ At Risk |
+| Net Contribution | K324,000+ | ✓ On Track / ⚠ At Risk |
 
 ---
 
 ## 1. Monthly Disbursement
 
-| Status | Value | Target |
-|--------|-------|--------|
-| ✓ On Track | K420,000 | K450,000+ |
-
 ### Definition
-The total principal amount of loans disbursed during the current month for the branch.
+The total amount of loans disbursed by a branch during a specific month.
 
 ### Formula
 ```
@@ -28,407 +32,424 @@ WHERE loans.office_id = {branch_id}
 ```
 
 ### Database Tables
-- [`loans`](database-dictionary.md:988) - Main loan records
-  - `office_id` - Links to branch
-  - `approved_amount` - The disbursed amount
-  - `disbursement_date` - Date of disbursement
-  - `status` - Must be 'disbursed'
+| Table | Columns Used | Purpose |
+|-------|--------------|---------|
+| `loans` | `id`, `office_id`, `approved_amount`, `status`, `disbursement_date` | Main loan data |
+| `offices` | `id`, `name` | Branch information |
+| `users` | `id`, `office_id` | User-branch mapping |
+| `loan_products` | `id`, `name` | Product categorization |
+
+### SQL Query Example
+```sql
+SELECT 
+    COALESCE(SUM(approved_amount), 0) AS monthly_disbursement,
+    COUNT(*) AS disbursement_count,
+    AVG(approved_amount) AS avg_loan_size
+FROM loans
+WHERE office_id = ?
+  AND status = 'disbursed'
+  AND disbursement_date BETWEEN ? AND ?
+```
 
 ### Status Indicators
-| Status | Condition |
-|--------|-----------|
-| ✓ On Track | ≥ Target (K450,000+) |
-| ⚠ At Risk | 70-99% of Target |
-| ✗ Below Target | < 70% of Target |
+- **✓ On Track**: ≥ 100% of Target (K450,000+)
+- **⚠ At Risk**: 70-99% of Target (K315,000 - K449,999)
+- **✗ Below Target**: < 70% of Target (< K315,000)
 
-### SQL Example
-```sql
-SELECT SUM(approved_amount) as monthly_disbursement
-FROM loans
-WHERE office_id = :branch_id
-  AND status = 'disbursed'
-  AND disbursement_date >= DATE_FORMAT(NOW(), '%Y-%m-01')
-  AND disbursement_date < DATE_ADD(DATE_FORMAT(NOW(), '%Y-%m-01'), INTERVAL 1 MONTH);
+### API Endpoint
+```
+GET /monthly-disbursement?office_id={branch_id}&period_start={start}&period_end={end}
 ```
 
 ---
 
 ## 2. Month-1 Default Rate
 
-| Status | Value | Target |
-|--------|-------|--------|
-| ⚠ At Risk | 26.5% | ≤25% |
-
 ### Definition
-The percentage of loans that go into default (miss first payment) within the first month after disbursement. This is a critical early warning indicator of loan quality and client vetting effectiveness.
+The percentage of loans that default within the first month (30 days) of disbursement. This measures the quality of loan assessment and client vetting.
 
 ### Formula
 ```
-Month-1 Default Rate = (Count of Loans Missing First Payment / Total Disbursed Loans in Cohort) × 100
-
-Where:
-- Loans Missing First Payment = Loans where first installment is unpaid after 30+ days from first_repayment_date
-- Cohort = Loans disbursed in the measurement period
+Month-1 Default Rate = (Number of Loans Defaulted in Month 1 / Total Loans Disbursed) × 100
 ```
 
+A loan is considered "Month-1 Default" if:
+1. Status is 'written_off' AND was written off within 30 days of disbursement, OR
+2. Status is 'disbursed' BUT has arrears ≥ 30 days (calculated from repayment schedule)
+
 ### Database Tables
-- [`loans`](database-dictionary.md:988) - Loan records
-  - `first_repayment_date` - Expected first payment date
-  - `disbursement_date` - When loan was given
-  - `status` - Current loan status
-  
-- [`loan_repayment_schedules`](database-dictionary.md:1218) - Payment schedules
-  - `loan_id` - Links to loan
-  - `installment` - Installment number (1 for first)
-  - `principal_paid` - Amount paid
-  - `interest_paid` - Amount paid
-  - `due_date` - When payment was due
+| Table | Columns Used | Purpose |
+|-------|--------------|---------|
+| `loans` | `id`, `office_id`, `status`, `disbursement_date`, `written_off_date` | Loan status and dates |
+| `loan_repayment_schedules` | `loan_id`, `due_date`, `paid`, `total_due` | Payment tracking |
+| `clients` | `id`, `first_name`, `last_name`, `mobile` | Client information |
 
-- [`loan_transactions`](database-dictionary.md:1290) - Payment records
-  - `transaction_type` = 'repayment'
-  - `date` - Payment date
-
-### Calculation Logic
+### SQL Query Example
 ```sql
--- Step 1: Get loans disbursed in the cohort period
-WITH cohort_loans AS (
-  SELECT id, office_id, first_repayment_date, approved_amount
-  FROM loans
-  WHERE office_id = :branch_id
-    AND status = 'disbursed'
-    AND disbursement_date BETWEEN :cohort_start AND :cohort_end
-),
--- Step 2: Identify loans with missed first payment
-missed_first_payment AS (
-  SELECT l.id
-  FROM cohort_loans l
-  JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id
-  WHERE lrs.installment = 1
-    AND lrs.due_date < DATE_SUB(NOW(), INTERVAL 30 DAY)
-    AND (lrs.principal_paid + lrs.interest_paid) < (lrs.principal + lrs.interest) * 0.9
-)
 SELECT 
-  (SELECT COUNT(*) FROM missed_first_payment) / 
-  (SELECT COUNT(*) FROM cohort_loans) * 100 as month_1_default_rate;
+    COUNT(*) AS total_disbursed,
+    SUM(CASE 
+        WHEN l.status = 'written_off' 
+             AND DATEDIFF(l.written_off_date, l.disbursement_date) <= 30 
+        THEN 1 
+        WHEN l.status = 'disbursed' 
+             AND EXISTS (
+                 SELECT 1 FROM loan_repayment_schedules lrs 
+                 WHERE lrs.loan_id = l.id 
+                   AND lrs.paid = 0 
+                   AND DATEDIFF(CURDATE(), lrs.due_date) >= 30
+             )
+        THEN 1
+        ELSE 0 
+    END) AS defaulted_in_month1
+FROM loans l
+WHERE l.office_id = ?
+  AND l.disbursement_date BETWEEN ? AND ?
+  AND l.status IN ('disbursed', 'written_off', 'closed', 'paid')
 ```
 
 ### Status Indicators
-| Status | Condition |
-|--------|-----------|
-| ✓ On Track | ≤ 25% |
-| ⚠ At Risk | 25-30% |
-| ✗ Critical | > 30% |
+- **✓ On Track**: ≤ 25% default rate
+- **⚠ At Risk**: > 25% default rate
 
-### Why It Matters
-- High Month-1 default rates indicate:
-  - Poor client vetting/screening
-  - Over-indebted clients
-  - Fraud or ghost loans
-  - Inadequate loan officer training
+### API Endpoint
+```
+GET /month1-default-rate?office_id={branch_id}&period_start={start}&period_end={end}
+```
 
 ---
 
 ## 3. Recovery Rate (Month-4)
 
-| Status | Value | Target |
-|--------|-------|--------|
-| ⚠ At Risk | 62% | ≥65% |
-
 ### Definition
-The percentage of the expected loan portfolio that has been collected by the 4th month after disbursement. This measures the branch's ability to collect payments on time.
+The percentage of outstanding loan amount that has been recovered after 4 months from disbursement. This measures the effectiveness of collection efforts.
 
 ### Formula
 ```
-Recovery Rate (Month-4) = (Total Collected by Month 4 / Total Expected by Month 4) × 100
-
-Where:
-- Total Collected = SUM of all repayments (principal + interest) received
-- Total Expected = SUM of scheduled payments due by month 4
+Recovery Rate = (Total Amount Collected / Total Amount Due for Collection) × 100
 ```
 
-### Database Tables
-- [`loans`](database-dictionary.md:988) - Loan records
-  - `office_id` - Branch identifier
-  - `disbursement_date` - Start date for calculation
-  
-- [`loan_transactions`](database-dictionary.md:1290) - Payment records
-  - `transaction_type` = 'repayment'
-  - `principal` - Principal portion collected
-  - `interest` - Interest portion collected
-  - `date` - Collection date
-  
-- [`loan_repayment_schedules`](database-dictionary.md:1218) - Expected payments
-  - `principal` - Expected principal
-  - `interest` - Expected interest
-  - `due_date` - When payment is due
+For Month-4 specifically:
+- Consider loans disbursed 4 months ago
+- Calculate collections vs expected repayments for those loans
 
-### Calculation Logic
+### Database Tables
+| Table | Columns Used | Purpose |
+|-------|--------------|---------|
+| `loans` | `id`, `office_id`, `status`, `disbursement_date` | Loan identification |
+| `loan_transactions` | `loan_id`, `transaction_type`, `principal`, `interest`, `fee`, `penalty`, `date`, `reversed`, `status` | Payment records |
+| `loan_repayment_schedules` | `loan_id`, `due_date`, `total_due`, `principal`, `interest`, `fees`, `penalty` | Expected payments |
+
+### SQL Query Example
 ```sql
-WITH loans_4_months AS (
-  -- Loans disbursed 4+ months ago
-  SELECT id, office_id, approved_amount, disbursement_date
-  FROM loans
-  WHERE office_id = :branch_id
-    AND status IN ('disbursed', 'closed', 'paid')
-    AND disbursement_date <= DATE_SUB(NOW(), INTERVAL 4 MONTH)
-),
-expected_collections AS (
-  -- Total expected by month 4
-  SELECT SUM(lrs.principal + lrs.interest) as total_expected
-  FROM loans_4_months l
-  JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id
-  WHERE lrs.due_date <= DATE_ADD(l.disbursement_date, INTERVAL 4 MONTH)
-),
-actual_collections AS (
-  -- Total collected by month 4
-  SELECT SUM(lt.principal + lt.interest) as total_collected
-  FROM loans_4_months l
-  JOIN loan_transactions lt ON lt.loan_id = l.id
-  WHERE lt.transaction_type = 'repayment'
-    AND lt.date <= DATE_ADD(l.disbursement_date, INTERVAL 4 MONTH)
-    AND lt.reversed = 0
-)
+-- Get collected amounts
 SELECT 
-  (SELECT total_collected FROM actual_collections) / 
-  (SELECT total_expected FROM expected_collections) * 100 as recovery_rate_month_4;
+    COALESCE(SUM(lt.principal + lt.interest + lt.fee + lt.penalty), 0) AS total_collected
+FROM loan_transactions lt
+JOIN loans l ON lt.loan_id = l.id
+WHERE l.office_id = ?
+  AND lt.transaction_type = 'repayment'
+  AND lt.created_at BETWEEN ? AND ?
+  AND lt.reversed = 0
+  AND lt.status = 'approved'
+  AND l.status IN ('disbursed', 'closed', 'paid')
+
+-- Get expected amounts
+SELECT 
+    COALESCE(SUM(lrs.total_due), 0) AS total_expected
+FROM loan_repayment_schedules lrs
+JOIN loans l ON lrs.loan_id = l.id
+WHERE l.office_id = ?
+  AND lrs.due_date BETWEEN ? AND ?
+  AND l.status IN ('disbursed', 'closed', 'paid')
 ```
 
 ### Status Indicators
-| Status | Condition |
-|--------|-----------|
-| ✓ On Track | ≥ 65% |
-| ⚠ At Risk | 55-64% |
-| ✗ Critical | < 55% |
+- **✓ On Track**: ≥ 65% recovery rate
+- **⚠ At Risk**: < 65% recovery rate
 
-### Why It Matters
-- Low recovery rates indicate:
-  - Collection inefficiencies
-  - Poor follow-up on overdue accounts
-  - Client cash flow problems
-  - Need for loan restructuring
+### API Endpoint
+```
+GET /collections-rate?office_id={branch_id}&period_start={start}&period_end={end}
+```
 
 ---
 
 ## 4. LCs at K50K+ Tier
 
-| Status | Value | Target |
-|--------|-------|--------|
-| ✓ On Track | 35% | ≥40% |
-
 ### Definition
-"LCs" = Loan Clients. This metric measures the percentage of active loan clients who have loans at or above the K50,000 tier. This indicates the branch's ability to serve higher-value clients and grow loan sizes.
+The percentage of Loan Consultants (LCs) who have achieved a portfolio tier of K50,000 or higher. This measures the productivity and growth of loan officers.
 
 ### Formula
 ```
-LCs at K50K+ Tier = (Count of Clients with Active Loans ≥ K50,000 / Total Active Loan Clients) × 100
+LCs at K50K+ Tier = (Number of LCs with Portfolio ≥ K50,000 / Total Active LCs) × 100
 ```
 
 ### Database Tables
-- [`loans`](database-dictionary.md:988) - Loan records
-  - `client_id` - Links to client
-  - `office_id` - Branch identifier
-  - `approved_amount` - Loan amount
-  - `status` - Must be 'disbursed' (active)
-  
-- [`clients`](database-dictionary.md:307) - Client records
-  - `office_id` - Branch assignment
-  - `status` - Must be 'active'
+| Table | Columns Used | Purpose |
+|-------|--------------|---------|
+| `users` | `id`, `office_id`, `status`, `job_position` | Loan officer identification |
+| `loans` | `loan_officer_id`, `principal`, `status` | Portfolio calculation |
+| `user_tiers` | `user_id`, `tier_id`, `current_portfolio_value` | Tier tracking |
+| `tier_definitions` | `id`, `name`, `minimum_portfolio_value` | Tier thresholds |
+| `job_positions` | `id`, `name` | Position identification |
 
-### Calculation Logic
+### SQL Query Example
 ```sql
-WITH active_loan_clients AS (
-  -- Distinct clients with active loans at this branch
-  SELECT DISTINCT client_id
-  FROM loans
-  WHERE office_id = :branch_id
-    AND status = 'disbursed'
-),
-clients_at_tier AS (
-  -- Clients with at least one loan ≥ K50,000
-  SELECT DISTINCT client_id
-  FROM loans
-  WHERE office_id = :branch_id
-    AND status = 'disbursed'
-    AND approved_amount >= 50000
-)
+-- Get LCs with their portfolio values
 SELECT 
-  (SELECT COUNT(*) FROM clients_at_tier) / 
-  (SELECT COUNT(*) FROM active_loan_clients) * 100 as lcs_at_50k_tier;
+    u.id AS officer_id,
+    CONCAT(u.first_name, ' ', u.last_name) AS officer_name,
+    COALESCE(SUM(l.principal), 0) AS portfolio_value,
+    CASE 
+        WHEN COALESCE(SUM(l.principal), 0) >= 50000 THEN 1 
+        ELSE 0 
+    END AS at_tier
+FROM users u
+LEFT JOIN loans l ON l.loan_officer_id = u.id AND l.status = 'disbursed'
+WHERE u.office_id = ?
+  AND u.status = 'Active'
+  AND u.job_position = ? -- LC position ID
+GROUP BY u.id, u.first_name, u.last_name
 ```
 
 ### Status Indicators
-| Status | Condition |
-|--------|-----------|
-| ✓ On Track | ≥ 40% |
-| ⚠ At Risk | 30-39% |
-| ✗ Below Target | < 30% |
+- **✓ On Track**: ≥ 40% of LCs at K50K+ tier
+- **⚠ At Risk**: < 40% of LCs at K50K+ tier
 
-### Why It Matters
-- Higher tier clients typically:
-  - Have better repayment capacity
-  - Generate more interest income
-  - Are more established businesses
-  - Indicate branch maturity and trust
+### Related API Endpoints
+```
+GET /user-tiers/:userId
+GET /staff-productivity?office_id={branch_id}
+```
 
 ---
 
 ## 5. Net Contribution
 
-| Status | Value | Target |
-|--------|-------|--------|
-| ✓ On Track | K295,000 | K324,000+ |
-
 ### Definition
-The net financial contribution of the branch to the organization, calculated as total income generated minus direct costs. This is a profitability measure.
+The net financial contribution of a branch to the organization, calculated as total income minus total expenses.
 
 ### Formula
 ```
-Net Contribution = Total Branch Income - Total Branch Expenses
+Net Contribution = Total Income - Total Expenses
 
 Where:
-- Total Branch Income = Interest Income + Fee Income + Penalty Income
-- Total Branch Expenses = Operating Expenses + Staff Costs + Other Direct Costs
+- Total Income = Interest Income + Fee Income + Penalty Income + Other Income
+- Total Expenses = Operating Expenses + Staff Costs (Payroll)
 ```
 
 ### Database Tables
+| Table | Columns Used | Purpose |
+|-------|--------------|---------|
+| `loan_transactions` | `interest`, `fee`, `penalty`, `transaction_type`, `date` | Income from loans |
+| `expenses` | `amount`, `office_id`, `date`, `status` | Branch expenses |
+| `payroll` | `paid_amount`, `office_id`, `date` | Staff costs |
+| `other_income` | `amount`, `office_id`, `date`, `status` | Other income sources |
+| `ledger_income` | `amount`, `office_id`, `date` | Ledger income |
 
-**Income Sources:**
-- [`loan_transactions`](database-dictionary.md:1290) - Interest and fees collected
-  - `interest` - Interest collected
-  - `fee` - Fees collected
-  - `penalty` - Penalties collected
-  - `office_id` - Branch identifier
-  
-- [`gl_journal_entries`](database-dictionary.md:797) - General ledger entries
-  - `transaction_type` = 'interest', 'fee', 'penalty'
-  - `credit` - Income amount
-  - `office_id` - Branch identifier
-
-**Expense Sources:**
-- [`expenses`](database-dictionary.md:650) - Operating expenses
-  - `office_id` - Branch identifier
-  - `amount` - Expense amount
-  - `status` = 'approved'
-  
-- [`payroll`](database-dictionary.md:1655) - Staff costs
-  - `office_id` - Branch identifier
-  - `paid_amount` - Salary paid
-
-### Calculation Logic
+### SQL Query Example
 ```sql
-WITH branch_income AS (
-  -- Interest, fees, and penalties collected this month
-  SELECT 
-    COALESCE(SUM(interest), 0) as interest_income,
-    COALESCE(SUM(fee), 0) as fee_income,
-    COALESCE(SUM(penalty), 0) as penalty_income
-  FROM loan_transactions
-  WHERE office_id = :branch_id
-    AND transaction_type = 'repayment'
-    AND date >= DATE_FORMAT(NOW(), '%Y-%m-01')
-    AND reversed = 0
-),
-branch_expenses AS (
-  -- Operating expenses
-  SELECT COALESCE(SUM(amount), 0) as operating_expenses
-  FROM expenses
-  WHERE office_id = :branch_id
-    AND status = 'approved'
-    AND date >= DATE_FORMAT(NOW(), '%Y-%m-01')
-),
-staff_costs AS (
-  -- Payroll costs
-  SELECT COALESCE(SUM(paid_amount), 0) as staff_expenses
-  FROM payroll
-  WHERE office_id = :branch_id
-    AND date >= DATE_FORMAT(NOW(), '%Y-%m-01')
-)
+-- Get income from loan transactions
 SELECT 
-  (bi.interest_income + bi.fee_income + bi.penalty_income) - 
-  (be.operating_expenses + sc.staff_expenses) as net_contribution
-FROM branch_income bi, branch_expenses be, staff_costs sc;
+    COALESCE(SUM(lt.interest), 0) AS interest_income,
+    COALESCE(SUM(lt.fee), 0) AS fee_income,
+    COALESCE(SUM(lt.penalty), 0) AS penalty_income,
+    COALESCE(SUM(lt.interest + lt.fee + lt.penalty), 0) AS total_loan_income
+FROM loan_transactions lt
+JOIN loans l ON lt.loan_id = l.id
+WHERE l.office_id = ?
+  AND lt.transaction_type = 'repayment'
+  AND lt.date BETWEEN ? AND ?
+  AND lt.reversed = 0
+  AND lt.status = 'approved'
+
+-- Get expenses
+SELECT 
+    COALESCE(SUM(amount), 0) AS total_expenses
+FROM expenses
+WHERE office_id = ?
+  AND date BETWEEN ? AND ?
+  AND status = 'approved'
+
+-- Get payroll costs
+SELECT 
+    COALESCE(SUM(paid_amount), 0) AS total_payroll
+FROM payroll
+WHERE office_id = ?
+  AND date BETWEEN ? AND ?
 ```
 
 ### Status Indicators
-| Status | Condition |
-|--------|-----------|
-| ✓ On Track | ≥ K324,000 |
-| ⚠ At Risk | K280,000 - K323,999 |
-| ✗ Below Target | < K280,000 |
+- **✓ On Track**: ≥ K324,000 net contribution
+- **⚠ At Risk**: < K324,000 net contribution
 
-### Why It Matters
-- Net contribution measures:
-  - Branch profitability
-  - Resource allocation efficiency
-  - Return on investment for the branch
-  - Sustainability of operations
-
----
-
-## Summary Dashboard
-
-| Metric | Current | Target | Status | Formula |
-|--------|---------|--------|--------|---------|
-| Monthly Disbursement | K420,000 | K450,000+ | ✓ On Track | `SUM(loans.approved_amount)` for current month |
-| Month-1 Default Rate | 26.5% | ≤25% | ⚠ At Risk | `(Missed 1st Payment / Total Disbursed) × 100` |
-| Recovery Rate (Month-4) | 62% | ≥65% | ⚠ At Risk | `(Collected / Expected) × 100` by month 4 |
-| LCs at K50K+ Tier | 35% | ≥40% | ✓ On Track | `(Clients ≥K50K / Total Clients) × 100` |
-| Net Contribution | K295,000 | K324,000+ | ✓ On Track | `Income - Expenses` |
-
----
-
-## Key Database Relationships
-
+### API Endpoint
 ```
-offices (Branch)
-    │
-    ├── manager_id ──► users (Branch Manager)
-    │
-    ├── clients.office_id ──► clients
-    │       │
-    │       └── loans.client_id ──► loans
-    │               │
-    │               ├── loan_transactions.loan_id
-    │               │       └── Repayments, Interest, Fees
-    │               │
-    │               └── loan_repayment_schedules.loan_id
-    │                       └── Expected payments
-    │
-    ├── loans.office_id ──► loans
-    │       │
-    │       └── (same relationships as above)
-    │
-    ├── expenses.office_id ──► expenses
-    │       └── Operating costs
-    │
-    └── payroll.office_id ──► payroll
-            └── Staff costs
+GET /province-branches-performance?province_id={province_id}&include_details=true
 ```
 
 ---
 
-## Status Icons Legend
+## Database Schema Relationships
 
-| Icon | Meaning |
-|------|---------|
-| ✓ On Track | Meeting or exceeding target |
-| ⚠ At Risk | Close to target but needs attention |
-| ✗ Below Target | Significantly below target, requires intervention |
+### Entity Relationship Diagram
+
+```
+┌─────────────┐     ┌─────────────┐     ┌──────────────────┐
+│   offices   │────<│    loans    │────<│ loan_transactions│
+│  (branch)   │     │             │     │                  │
+└─────────────┘     └─────────────┘     └──────────────────┘
+       │                   │                     │
+       │                   │                     │
+       ▼                   ▼                     ▼
+┌─────────────┐     ┌─────────────┐     ┌──────────────────┐
+│   users     │────<│  clients    │     │ loan_repayment   │
+│ (staff/LC)  │     │             │     │    _schedules    │
+└─────────────┘     └─────────────┘     └──────────────────┘
+       │
+       ▼
+┌─────────────┐
+│ user_tiers  │
+│             │
+└─────────────┘
+```
+
+### Key Relationships
+
+| Relationship | Description |
+|--------------|-------------|
+| `clients.office_id` → `offices.id` | Clients belong to a branch |
+| `loans.office_id` → `offices.id` | Loans belong to a branch |
+| `loans.client_id` → `clients.id` | Loans belong to clients |
+| `loans.loan_officer_id` → `users.id` | Loans assigned to loan officers |
+| `loan_transactions.loan_id` → `loans.id` | Transactions linked to loans |
+| `loan_repayment_schedules.loan_id` → `loans.id` | Schedules linked to loans |
+| `users.office_id` → `offices.id` | Staff assigned to branches |
+| `user_tiers.user_id` → `users.id` | Tier tracking per user |
 
 ---
 
-## Notes for Branch Managers
+## Important Notes
 
-1. **Monthly Disbursement**: Focus on quality over quantity. High disbursement with high default rates is counterproductive.
+### Date Filtering
+- **Use `created_at` column** for date filtering in most queries as it represents when the record was created in the system
+- `disbursement_date` is used specifically for disbursement-related metrics
+- `due_date` in `loan_repayment_schedules` is used for expected payment calculations
 
-2. **Month-1 Default Rate**: If this is high, review your client screening process and ensure loan officers are conducting proper due diligence.
+### SQL GROUP BY Considerations
+When joining multiple tables with aggregate functions, ensure all non-aggregated columns are included in the GROUP BY clause to avoid `ONLY_FULL_GROUP_BY` SQL mode errors. Best practice is to:
+1. Split complex queries into separate queries for each table
+2. Join results in application code
+3. Use subqueries for derived calculations
 
-3. **Recovery Rate**: Monitor this weekly. If declining, increase follow-up with overdue clients and consider restructuring options.
+### Transaction Types in loan_transactions
+| Type | Description |
+|------|-------------|
+| `repayment` | Regular loan payment |
+| `disbursement` | Loan payout |
+| `interest_accrual` | Interest calculation |
+| `fee_accrual` | Fee calculation |
+| `penalty_accrual` | Penalty calculation |
+| `write_off` | Loan written off |
 
-4. **LCs at K50K+ Tier**: Work on graduating clients to higher tiers through good performance and relationship building.
-
-5. **Net Contribution**: Balance growth with cost control. Every expense should contribute to revenue generation.
+### Loan Status Values
+| Status | Description |
+|--------|-------------|
+| `pending` | Application submitted |
+| `approved` | Approved but not disbursed |
+| `disbursed` | Active loan |
+| `closed` | Fully paid |
+| `written_off` | Written off as bad debt |
+| `rejected` | Application rejected |
+| `declined` | Application declined |
 
 ---
 
-*Document generated based on the loan management system database schema.*
+## API Endpoints Summary
+
+| Endpoint | Purpose | Required Parameters |
+|----------|---------|---------------------|
+| `GET /monthly-disbursement` | Monthly disbursement totals | `office_id` or `user_id` |
+| `GET /month1-default-rate` | Month-1 default rate | `office_id` |
+| `GET /collections-rate` | Collections/Recovery rate | `office_id` |
+| `GET /user-tiers/:userId` | User tier information | `userId` (path param) |
+| `GET /staff-productivity` | Staff productivity scores | `office_id` |
+| `GET /province-branches-performance` | Branch performance overview | `province_id` |
+| `GET /active-loans` | Active loans count | `office_id` |
+
+---
+
+## Sample API Responses
+
+### Monthly Disbursement Response
+```json
+{
+  "success": true,
+  "data": {
+    "metric": "Monthly Disbursement",
+    "office_id": 1,
+    "office_name": "Lusaka Branch",
+    "current_period": {
+      "total_disbursement": 420000,
+      "formatted": "K420K",
+      "disbursement_count": 15
+    },
+    "target": {
+      "amount": 450000,
+      "achievement_percentage": 93.33
+    },
+    "status": {
+      "code": "at_risk",
+      "icon": "⚠",
+      "label": "At Risk"
+    }
+  }
+}
+```
+
+### Collections Rate Response
+```json
+{
+  "success": true,
+  "data": {
+    "metric": "Collections Rate",
+    "office_id": 1,
+    "current_period": {
+      "total_collected": 85000,
+      "total_expected": 100000,
+      "collection_rate": 85.00,
+      "formatted_rate": "85.00%"
+    },
+    "target": {
+      "rate": 93.0,
+      "status": "below_target"
+    }
+  }
+}
+```
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+1. **SQL GROUP BY Errors**
+   - Error: "Expression #X of SELECT list is not in GROUP BY clause"
+   - Solution: Split joined queries into separate queries for each table
+
+2. **Missing Data**
+   - Check that `office_id` is correctly set for all entities
+   - Verify date ranges are correct
+   - Ensure status filters include relevant statuses
+
+3. **Incorrect Calculations**
+   - Verify `reversed = 0` filter for transactions
+   - Check `status = 'approved'` for valid transactions
+   - Use `COALESCE()` to handle NULL values
+
+---
+
+*Last Updated: February 2026*
+*Document Version: 1.0*

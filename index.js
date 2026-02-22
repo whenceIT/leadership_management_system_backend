@@ -1729,50 +1729,56 @@ app.get('/collections-rate', async (req, res) => {
         const prevStartDate = prevMonthStart.toISOString().split('T')[0];
         const prevEndDate = prevMonthEnd.toISOString().split('T')[0];
 
-        // Main query for current period collections
-        // Using loan_transactions for actual collections and loan_repayment_schedules for expected
-        const [currentPeriodResult] = await pool.query(`
+        // Get collected amounts - separate query to avoid GROUP BY issues
+        const [collectedResult] = await pool.query(`
             SELECT 
-                COALESCE(SUM(
-                    lt.principal + lt.interest + lt.fee + lt.penalty
-                ), 0) AS total_collected,
-                COALESCE(SUM(
-                    lrs.total_due
-                ), 0) AS total_expected,
-                COUNT(DISTINCT lt.loan_id) AS loans_with_payments,
-                COUNT(DISTINCT lrs.loan_id) AS loans_with_due
-            FROM loans l
-            LEFT JOIN loan_transactions lt ON lt.loan_id = l.id
-                AND lt.transaction_type = 'repayment'
-                AND lt.date BETWEEN ? AND ?
-                AND lt.reversed = 0
-                AND lt.status = 'approved'
-            LEFT JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id
-                AND lrs.due_date BETWEEN ? AND ?
+                COALESCE(SUM(lt.principal + lt.interest + lt.fee + lt.penalty), 0) AS total_collected,
+                COUNT(DISTINCT lt.loan_id) AS loans_with_payments
+            FROM loan_transactions lt
+            JOIN loans l ON lt.loan_id = l.id
             WHERE l.office_id = ?
+              AND lt.transaction_type = 'repayment'
+              AND lt.created_at BETWEEN ? AND ?
+              AND lt.reversed = 0
+              AND lt.status = 'approved'
               AND l.status IN ('disbursed', 'closed', 'paid')
-        `, [startDate, endDate, startDate, endDate, office_id]);
+        `, [office_id, startDate, endDate]);
+
+        // Get expected amounts - separate query
+        const [expectedResultMain] = await pool.query(`
+            SELECT 
+                COALESCE(SUM(lrs.total_due), 0) AS total_expected,
+                COUNT(DISTINCT lrs.loan_id) AS loans_with_due
+            FROM loan_repayment_schedules lrs
+            JOIN loans l ON lrs.loan_id = l.id
+            WHERE l.office_id = ?
+              AND lrs.due_date BETWEEN ? AND ?
+              AND l.status IN ('disbursed', 'closed', 'paid')
+        `, [office_id, startDate, endDate]);
 
         // Query for previous period (for trend comparison)
-        const [prevPeriodResult] = await pool.query(`
+        const [prevCollectedResult] = await pool.query(`
             SELECT 
-                COALESCE(SUM(
-                    lt.principal + lt.interest + lt.fee + lt.penalty
-                ), 0) AS total_collected,
-                COALESCE(SUM(
-                    lrs.total_due
-                ), 0) AS total_expected
-            FROM loans l
-            LEFT JOIN loan_transactions lt ON lt.loan_id = l.id
-                AND lt.transaction_type = 'repayment'
-                AND lt.date BETWEEN ? AND ?
-                AND lt.reversed = 0
-                AND lt.status = 'approved'
-            LEFT JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id
-                AND lrs.due_date BETWEEN ? AND ?
+                COALESCE(SUM(lt.principal + lt.interest + lt.fee + lt.penalty), 0) AS total_collected
+            FROM loan_transactions lt
+            JOIN loans l ON lt.loan_id = l.id
             WHERE l.office_id = ?
+              AND lt.transaction_type = 'repayment'
+              AND lt.created_at BETWEEN ? AND ?
+              AND lt.reversed = 0
+              AND lt.status = 'approved'
               AND l.status IN ('disbursed', 'closed', 'paid')
-        `, [prevStartDate, prevEndDate, prevStartDate, prevEndDate, office_id]);
+        `, [office_id, prevStartDate, prevEndDate]);
+
+        const [prevExpectedResult] = await pool.query(`
+            SELECT 
+                COALESCE(SUM(lrs.total_due), 0) AS total_expected
+            FROM loan_repayment_schedules lrs
+            JOIN loans l ON lrs.loan_id = l.id
+            WHERE l.office_id = ?
+              AND lrs.due_date BETWEEN ? AND ?
+              AND l.status IN ('disbursed', 'closed', 'paid')
+        `, [office_id, prevStartDate, prevEndDate]);
 
         // Alternative calculation using derived fields (more accurate)
         const [derivedResult] = await pool.query(`
@@ -1824,13 +1830,13 @@ app.get('/collections-rate', async (req, res) => {
               AND lt.status = 'approved'
         `, [office_id, startDate, endDate]);
 
-        // Calculate rates
-        const currentCollected = parseFloat(currentPeriodResult[0].total_collected) || 0;
-        const currentExpected = parseFloat(currentPeriodResult[0].total_expected) || 0;
+        // Calculate rates using the separate query results
+        const currentCollected = parseFloat(collectedResult[0].total_collected) || 0;
+        const currentExpected = parseFloat(expectedResultMain[0].total_expected) || 0;
         const currentRate = currentExpected > 0 ? ((currentCollected / currentExpected) * 100).toFixed(2) : 0;
 
-        const prevCollected = parseFloat(prevPeriodResult[0].total_collected) || 0;
-        const prevExpected = parseFloat(prevPeriodResult[0].total_expected) || 0;
+        const prevCollected = parseFloat(prevCollectedResult[0].total_collected) || 0;
+        const prevExpected = parseFloat(prevExpectedResult[0].total_expected) || 0;
         const prevRate = prevExpected > 0 ? ((prevCollected / prevExpected) * 100).toFixed(2) : 0;
 
         // Calculate change from target
@@ -1907,8 +1913,8 @@ app.get('/collections-rate', async (req, res) => {
                     total_expected: currentExpected,
                     collection_rate: parseFloat(currentRate),
                     formatted_rate: `${currentRate}%`,
-                    loans_with_payments: currentPeriodResult[0].loans_with_payments,
-                    loans_with_due: currentPeriodResult[0].loans_with_due
+                    loans_with_payments: collectedResult[0].loans_with_payments,
+                    loans_with_due: expectedResultMain[0].loans_with_due
                 },
                 previous_period: {
                     start_date: prevStartDate,
