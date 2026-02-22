@@ -2648,6 +2648,604 @@ app.get('/staff-productivity', async (req, res) => {
     }
 });
 
+/**
+ * GET /province-branches-performance
+ * Get Branch Performance Overview for Provincial Managers
+ * 
+ * Query Parameters:
+ * - province_id (required): Province ID to filter branches
+ * - period_start (optional): Start date for the period (YYYY-MM-DD)
+ * - period_end (optional): End date for the period (YYYY-MM-DD)
+ * - include_details (optional): Include detailed breakdown (default: false)
+ * 
+ * Returns: List of branches with net contribution and performance metrics
+ */
+app.get('/province-branches-performance', async (req, res) => {
+    try {
+        const { province_id, period_start, period_end, include_details } = req.query;
+
+        // Validation
+        if (!province_id) {
+            return res.status(400).json({
+                success: false,
+                error: "province_id is required"
+            });
+        }
+
+        // Set default period to current month if not provided
+        const today = new Date();
+        const currentMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+        const currentMonthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+        
+        const startDate = period_start || currentMonthStart.toISOString().split('T')[0];
+        const endDate = period_end || currentMonthEnd.toISOString().split('T')[0];
+
+        // Get province info
+        const [provinceInfo] = await pool.query(`
+            SELECT id, name FROM province WHERE id = ?
+        `, [province_id]);
+
+        if (provinceInfo.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: "Province not found"
+            });
+        }
+
+        // Get all branches in the province
+        const [branches] = await pool.query(`
+            SELECT 
+                o.id AS branch_id,
+                o.name AS branch_name,
+                o.branch_capacity,
+                o.manager_id,
+                CONCAT(u.first_name, ' ', u.last_name) AS manager_name,
+                o.active,
+                (SELECT COUNT(*) FROM users WHERE office_id = o.id AND status = 'Active') AS staff_count
+            FROM offices o
+            LEFT JOIN users u ON o.manager_id = u.id
+            WHERE o.province_id = ?
+            ORDER BY o.name
+        `, [province_id]);
+
+        // Calculate performance metrics for each branch
+        const branchPerformance = await Promise.all(branches.map(async (branch) => {
+            const branchId = branch.branch_id;
+
+            // Net Contribution = Total Income - Total Expenses
+            // Income: Interest collected + Fees collected + Penalties collected
+            // From loan_transactions where transaction_type = 'repayment'
+            const [incomeResult] = await pool.query(`
+                SELECT 
+                    COALESCE(SUM(lt.interest), 0) AS interest_income,
+                    COALESCE(SUM(lt.fee), 0) AS fee_income,
+                    COALESCE(SUM(lt.penalty), 0) AS penalty_income,
+                    COALESCE(SUM(lt.interest + lt.fee + lt.penalty), 0) AS total_income,
+                    COALESCE(SUM(lt.principal), 0) AS principal_collected,
+                    COUNT(DISTINCT lt.id) AS transaction_count
+                FROM loan_transactions lt
+                JOIN loans l ON lt.loan_id = l.id
+                WHERE l.office_id = ?
+                  AND lt.transaction_type = 'repayment'
+                  AND lt.date BETWEEN ? AND ?
+                  AND lt.reversed = 0
+                  AND lt.status = 'approved'
+            `, [branchId, startDate, endDate]);
+
+            // Get expenses for the branch
+            const [expenseResult] = await pool.query(`
+                SELECT 
+                    COALESCE(SUM(amount), 0) AS total_expenses,
+                    COUNT(*) AS expense_count
+                FROM expenses
+                WHERE office_id = ?
+                  AND date BETWEEN ? AND ?
+                  AND status = 'approved'
+            `, [branchId, startDate, endDate]);
+
+            // Get other income
+            const [otherIncomeResult] = await pool.query(`
+                SELECT 
+                    COALESCE(SUM(amount), 0) AS other_income
+                FROM other_income
+                WHERE office_id = ?
+                  AND date BETWEEN ? AND ?
+                  AND status = 'approved'
+            `, [branchId, startDate, endDate]);
+
+            // Get ledger income
+            const [ledgerIncomeResult] = await pool.query(`
+                SELECT 
+                    COALESCE(SUM(amount), 0) AS ledger_income
+                FROM ledger_income
+                WHERE office_id = ?
+                  AND date BETWEEN ? AND ?
+            `, [branchId, startDate, endDate]);
+
+            // Calculate net contribution
+            const interestIncome = parseFloat(incomeResult[0].interest_income) || 0;
+            const feeIncome = parseFloat(incomeResult[0].fee_income) || 0;
+            const penaltyIncome = parseFloat(incomeResult[0].penalty_income) || 0;
+            const totalLoanIncome = parseFloat(incomeResult[0].total_income) || 0;
+            const otherIncome = parseFloat(otherIncomeResult[0].other_income) || 0;
+            const ledgerIncome = parseFloat(ledgerIncomeResult[0].ledger_income) || 0;
+            const totalExpenses = parseFloat(expenseResult[0].total_expenses) || 0;
+            
+            const totalIncome = totalLoanIncome + otherIncome + ledgerIncome;
+            const netContribution = totalIncome - totalExpenses;
+
+            // Get active loans count
+            const [activeLoansResult] = await pool.query(`
+                SELECT COUNT(*) AS active_loans
+                FROM loans
+                WHERE office_id = ?
+                  AND status = 'disbursed'
+            `, [branchId]);
+
+            // Get active clients count
+            const [activeClientsResult] = await pool.query(`
+                SELECT COUNT(*) AS active_clients
+                FROM clients
+                WHERE office_id = ?
+                  AND status = 'active'
+            `, [branchId]);
+
+            // Get portfolio value (outstanding balance)
+            const [portfolioResult] = await pool.query(`
+                SELECT 
+                    COALESCE(SUM(l.principal_derived), 0) AS total_principal,
+                    COALESCE(SUM(l.interest_derived), 0) AS total_interest,
+                    COALESCE(SUM(l.principal_derived + l.interest_derived + l.fees_derived + l.penalty_derived), 0) AS total_portfolio
+                FROM loans l
+                WHERE l.office_id = ?
+                  AND l.status = 'disbursed'
+            `, [branchId]);
+
+            // Get disbursements for the period
+            const [disbursementsResult] = await pool.query(`
+                SELECT 
+                    COUNT(*) AS disbursement_count,
+                    COALESCE(SUM(principal), 0) AS total_disbursed
+                FROM loans
+                WHERE office_id = ?
+                  AND status = 'disbursed'
+                  AND disbursement_date BETWEEN ? AND ?
+            `, [branchId, startDate, endDate]);
+
+            // Get PAR (Portfolio at Risk)
+            const [parResult] = await pool.query(`
+                SELECT 
+                    COALESCE(SUM(CASE WHEN arrears_days > 30 THEN outstanding_balance ELSE 0 END), 0) AS par_balance,
+                    COALESCE(SUM(outstanding_balance), 0) AS total_portfolio,
+                    CASE 
+                        WHEN SUM(outstanding_balance) > 0 
+                        THEN ROUND((SUM(CASE WHEN arrears_days > 30 THEN outstanding_balance ELSE 0 END) / SUM(outstanding_balance)) * 100, 2)
+                        ELSE 0 
+                    END AS par_rate
+                FROM (
+                    SELECT 
+                        l.id,
+                        DATEDIFF(CURDATE(), MIN(lrs.due_date)) AS arrears_days,
+                        (lrs.total_due - COALESCE(lrs.principal_paid, 0) - COALESCE(lrs.interest_paid, 0) - COALESCE(lrs.fees_paid, 0) - COALESCE(lrs.penalty_paid, 0)) AS outstanding_balance
+                    FROM loans l
+                    JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id
+                    WHERE l.office_id = ?
+                      AND l.status = 'disbursed'
+                      AND lrs.paid = 0
+                    GROUP BY l.id
+                ) portfolio
+            `, [branchId]);
+
+            // Get collections rate
+            const [collectionsResult] = await pool.query(`
+                SELECT 
+                    COALESCE(SUM(lt.principal + lt.interest + lt.fee + lt.penalty), 0) AS total_collected,
+                    COALESCE(SUM(lrs.total_due), 0) AS total_expected,
+                    CASE 
+                        WHEN SUM(lrs.total_due) > 0 
+                        THEN ROUND((SUM(lt.principal + lt.interest + lt.fee + lt.penalty) / SUM(lrs.total_due)) * 100, 2)
+                        ELSE 0 
+                    END AS collection_rate
+                FROM loans l
+                LEFT JOIN loan_transactions lt ON lt.loan_id = l.id
+                    AND lt.transaction_type = 'repayment'
+                    AND lt.date BETWEEN ? AND ?
+                    AND lt.reversed = 0
+                    AND lt.status = 'approved'
+                LEFT JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id
+                    AND lrs.due_date BETWEEN ? AND ?
+                WHERE l.office_id = ?
+                  AND l.status IN ('disbursed', 'closed', 'paid')
+            `, [startDate, endDate, startDate, endDate, branchId]);
+
+            return {
+                branch_id: branchId,
+                branch_name: branch.branch_name,
+                manager_name: branch.manager_name,
+                staff_count: branch.staff_count,
+                branch_capacity: branch.branch_capacity,
+                is_active: branch.active === 1,
+                net_contribution: {
+                    total: netContribution,
+                    formatted: formatCurrency(netContribution),
+                    income: {
+                        interest: interestIncome,
+                        fees: feeIncome,
+                        penalties: penaltyIncome,
+                        loan_income: totalLoanIncome,
+                        other_income: otherIncome,
+                        ledger_income: ledgerIncome,
+                        total: totalIncome
+                    },
+                    expenses: totalExpenses
+                },
+                portfolio: {
+                    active_loans: activeLoansResult[0].active_loans,
+                    active_clients: activeClientsResult[0].active_clients,
+                    total_portfolio: parseFloat(portfolioResult[0].total_portfolio) || 0,
+                    formatted_portfolio: formatCurrency(parseFloat(portfolioResult[0].total_portfolio) || 0)
+                },
+                disbursements: {
+                    count: disbursementsResult[0].disbursement_count,
+                    total: parseFloat(disbursementsResult[0].total_disbursed) || 0,
+                    formatted: formatCurrency(parseFloat(disbursementsResult[0].total_disbursed) || 0)
+                },
+                par: {
+                    rate: parseFloat(parResult[0].par_rate) || 0,
+                    par_balance: parseFloat(parResult[0].par_balance) || 0
+                },
+                collections: {
+                    rate: parseFloat(collectionsResult[0].collection_rate) || 0,
+                    collected: parseFloat(collectionsResult[0].total_collected) || 0,
+                    expected: parseFloat(collectionsResult[0].total_expected) || 0
+                }
+            };
+        }));
+
+        // Sort branches by net contribution (highest first)
+        branchPerformance.sort((a, b) => b.net_contribution.total - a.net_contribution.total);
+
+        // Calculate province totals
+        const provinceTotals = {
+            total_branches: branches.length,
+            active_branches: branches.filter(b => b.active === 1).length,
+            total_staff: branches.reduce((sum, b) => sum + b.staff_count, 0),
+            total_net_contribution: branchPerformance.reduce((sum, b) => sum + b.net_contribution.total, 0),
+            total_portfolio: branchPerformance.reduce((sum, b) => sum + b.portfolio.total_portfolio, 0),
+            total_active_loans: branchPerformance.reduce((sum, b) => sum + b.portfolio.active_loans, 0),
+            total_active_clients: branchPerformance.reduce((sum, b) => sum + b.portfolio.active_clients, 0),
+            average_par_rate: branchPerformance.reduce((sum, b) => sum + b.par.rate, 0) / (branches.length || 1),
+            average_collection_rate: branchPerformance.reduce((sum, b) => sum + b.collections.rate, 0) / (branches.length || 1)
+        };
+
+        // Build response
+        const responseData = {
+            metric: "Branch Performance Overview",
+            province: {
+                id: parseInt(province_id),
+                name: provinceInfo[0].name
+            },
+            period: {
+                start_date: startDate,
+                end_date: endDate
+            },
+            province_summary: {
+                total_branches: provinceTotals.total_branches,
+                active_branches: provinceTotals.active_branches,
+                total_staff: provinceTotals.total_staff,
+                total_net_contribution: provinceTotals.total_net_contribution,
+                formatted_net_contribution: formatCurrency(provinceTotals.total_net_contribution),
+                total_portfolio: provinceTotals.total_portfolio,
+                formatted_portfolio: formatCurrency(provinceTotals.total_portfolio),
+                total_active_loans: provinceTotals.total_active_loans,
+                total_active_clients: provinceTotals.total_active_clients,
+                average_par_rate: parseFloat(provinceTotals.average_par_rate.toFixed(2)),
+                average_collection_rate: parseFloat(provinceTotals.average_collection_rate.toFixed(2))
+            },
+            branches: branchPerformance.map((branch, index) => ({
+                rank: index + 1,
+                branch_id: branch.branch_id,
+                branch_name: branch.branch_name,
+                manager_name: branch.manager_name,
+                net_contribution: branch.net_contribution.formatted,
+                net_contribution_value: branch.net_contribution.total,
+                portfolio: branch.portfolio,
+                disbursements: branch.disbursements,
+                par: branch.par,
+                collections: branch.collections,
+                staff_count: branch.staff_count
+            }))
+        };
+
+        // Include detailed breakdown if requested
+        if (include_details === 'true') {
+            responseData.detailed_breakdown = branchPerformance;
+        }
+
+        // Response
+        return res.json({
+            success: true,
+            data: responseData
+        });
+
+    } catch (err) {
+        console.error('Error fetching Province Branches Performance:', err);
+        return res.status(500).json({
+            success: false,
+            error: "Failed to fetch Province Branches Performance",
+            message: err.message
+        });
+    }
+});
+
+/**
+ * GET /monthly-disbursement
+ * Calculate Monthly Disbursement for a branch/office
+ * 
+ * Query Parameters:
+ * - user_id (required): User ID (branch manager)
+ * - office_id (required): Branch office ID
+ * - period_start (optional): Start date for the period (YYYY-MM-DD)
+ * - period_end (optional): End date for the period (YYYY-MM-DD)
+ * - target (optional): Target amount (default: 450000)
+ * 
+ * Formula: Monthly Disbursement = SUM(loans.approved_amount)
+ * WHERE loans.office_id = {branch_id}
+ *   AND loans.status = 'disbursed'
+ *   AND loans.disbursement_date BETWEEN {month_start} AND {month_end}
+ * 
+ * Status Indicators:
+ * - ✓ On Track: ≥ Target (K450,000+)
+ * - ⚠ At Risk: 70-99% of Target
+ * - ✗ Below Target: < 70% of Target
+ */
+app.get('/monthly-disbursement', async (req, res) => {
+    try {
+        const { user_id, office_id, period_start, period_end, target } = req.query;
+
+        // Validation
+        if (!user_id && !office_id) {
+            return res.status(400).json({
+                success: false,
+                error: "user_id or office_id is required"
+            });
+        }
+
+        // Determine the office_id to use
+        let targetOfficeId = office_id;
+        
+        // If only user_id is provided, get the user's office_id
+        if (!office_id && user_id) {
+            const [userResult] = await pool.query(`
+                SELECT office_id FROM users WHERE id = ?
+            `, [user_id]);
+            
+            if (userResult.length === 0) {
+                return res.status(404).json({
+                    success: false,
+                    error: "User not found"
+                });
+            }
+            
+            targetOfficeId = userResult[0].office_id;
+        }
+
+        // Set default period to current month if not provided
+        const today = new Date();
+        const currentMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+        const currentMonthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+        
+        const startDate = period_start || currentMonthStart.toISOString().split('T')[0];
+        const endDate = period_end || currentMonthEnd.toISOString().split('T')[0];
+        const targetAmount = parseFloat(target) || 450000;
+
+        // Calculate previous month for trend comparison
+        const prevMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+        const prevMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
+        const prevStartDate = prevMonthStart.toISOString().split('T')[0];
+        const prevEndDate = prevMonthEnd.toISOString().split('T')[0];
+
+        // Main query for current period disbursement
+        const [currentPeriodResult] = await pool.query(`
+            SELECT 
+                COALESCE(SUM(approved_amount), 0) AS monthly_disbursement,
+                COUNT(*) AS disbursement_count,
+                AVG(approved_amount) AS avg_loan_size,
+                MIN(approved_amount) AS min_loan,
+                MAX(approved_amount) AS max_loan
+            FROM loans
+            WHERE office_id = ?
+              AND status = 'disbursed'
+              AND disbursement_date BETWEEN ? AND ?
+        `, [targetOfficeId, startDate, endDate]);
+
+        // Query for previous period (for trend comparison)
+        const [prevPeriodResult] = await pool.query(`
+            SELECT 
+                COALESCE(SUM(approved_amount), 0) AS monthly_disbursement,
+                COUNT(*) AS disbursement_count
+            FROM loans
+            WHERE office_id = ?
+              AND status = 'disbursed'
+              AND disbursement_date BETWEEN ? AND ?
+        `, [targetOfficeId, prevStartDate, prevEndDate]);
+
+        // Get disbursements by loan product
+        const [productBreakdownResult] = await pool.query(`
+            SELECT 
+                lp.id AS product_id,
+                lp.name AS product_name,
+                COUNT(l.id) AS loan_count,
+                SUM(l.approved_amount) AS total_disbursed,
+                AVG(l.approved_amount) AS avg_loan_size
+            FROM loans l
+            LEFT JOIN loan_products lp ON l.loan_product_id = lp.id
+            WHERE l.office_id = ?
+              AND l.status = 'disbursed'
+              AND l.disbursement_date BETWEEN ? AND ?
+            GROUP BY lp.id, lp.name
+            ORDER BY total_disbursed DESC
+        `, [targetOfficeId, startDate, endDate]);
+
+        // Get disbursements by loan officer
+        const [officerBreakdownResult] = await pool.query(`
+            SELECT 
+                u.id AS officer_id,
+                CONCAT(u.first_name, ' ', u.last_name) AS officer_name,
+                COUNT(l.id) AS loan_count,
+                SUM(l.approved_amount) AS total_disbursed,
+                AVG(l.approved_amount) AS avg_loan_size
+            FROM loans l
+            JOIN users u ON l.loan_officer_id = u.id
+            WHERE l.office_id = ?
+              AND l.status = 'disbursed'
+              AND l.disbursement_date BETWEEN ? AND ?
+            GROUP BY u.id, u.first_name, u.last_name
+            ORDER BY total_disbursed DESC
+        `, [targetOfficeId, startDate, endDate]);
+
+        // Get daily disbursement trend
+        const [dailyTrendResult] = await pool.query(`
+            SELECT 
+                disbursement_date AS date,
+                COUNT(*) AS loan_count,
+                SUM(approved_amount) AS daily_total
+            FROM loans
+            WHERE office_id = ?
+              AND status = 'disbursed'
+              AND disbursement_date BETWEEN ? AND ?
+            GROUP BY disbursement_date
+            ORDER BY disbursement_date DESC
+        `, [targetOfficeId, startDate, endDate]);
+
+        // Calculate values
+        const currentDisbursement = parseFloat(currentPeriodResult[0].monthly_disbursement) || 0;
+        const prevDisbursement = parseFloat(prevPeriodResult[0].monthly_disbursement) || 0;
+        const achievementPercentage = targetAmount > 0 ? (currentDisbursement / targetAmount) * 100 : 0;
+        const changeFromLastMonth = prevDisbursement > 0 ? ((currentDisbursement - prevDisbursement) / prevDisbursement) * 100 : 0;
+
+        // Determine status
+        let status = 'on_track';
+        let statusIcon = '✓';
+        let statusLabel = 'On Track';
+        
+        if (achievementPercentage >= 100) {
+            status = 'on_track';
+            statusIcon = '✓';
+            statusLabel = 'On Track';
+        } else if (achievementPercentage >= 70) {
+            status = 'at_risk';
+            statusIcon = '⚠';
+            statusLabel = 'At Risk';
+        } else {
+            status = 'below_target';
+            statusIcon = '✗';
+            statusLabel = 'Below Target';
+        }
+
+        // Get branch info
+        const [branchInfoResult] = await pool.query(`
+            SELECT id, name FROM offices WHERE id = ?
+        `, [targetOfficeId]);
+
+        // Calculate remaining days and required daily rate
+        const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+        const daysRemaining = daysInMonth - today.getDate();
+        const remainingTarget = Math.max(0, targetAmount - currentDisbursement);
+        const requiredDailyRate = daysRemaining > 0 ? remainingTarget / daysRemaining : 0;
+
+        // Build response
+        const responseData = {
+            metric: "Monthly Disbursement",
+            user_id: user_id ? parseInt(user_id) : null,
+            office_id: parseInt(targetOfficeId),
+            office_name: branchInfoResult[0]?.name || null,
+            period: {
+                start_date: startDate,
+                end_date: endDate
+            },
+            current_period: {
+                total_disbursement: currentDisbursement,
+                formatted: formatCurrency(currentDisbursement),
+                disbursement_count: currentPeriodResult[0].disbursement_count || 0,
+                avg_loan_size: parseFloat(currentPeriodResult[0].avg_loan_size) || 0,
+                min_loan: parseFloat(currentPeriodResult[0].min_loan) || 0,
+                max_loan: parseFloat(currentPeriodResult[0].max_loan) || 0
+            },
+            previous_period: {
+                start_date: prevStartDate,
+                end_date: prevEndDate,
+                total_disbursement: prevDisbursement,
+                formatted: formatCurrency(prevDisbursement),
+                disbursement_count: prevPeriodResult[0].disbursement_count || 0
+            },
+            target: {
+                amount: targetAmount,
+                formatted: formatCurrency(targetAmount),
+                achievement_percentage: parseFloat(achievementPercentage.toFixed(2)),
+                remaining: remainingTarget,
+                remaining_formatted: formatCurrency(remainingTarget)
+            },
+            status: {
+                code: status,
+                icon: statusIcon,
+                label: statusLabel,
+                achievement_percentage: parseFloat(achievementPercentage.toFixed(2)),
+                formatted_percentage: `${achievementPercentage.toFixed(1)}%`
+            },
+            trend: {
+                change_from_last_month: parseFloat(changeFromLastMonth.toFixed(2)),
+                direction: changeFromLastMonth >= 0 ? 'increase' : 'decrease',
+                formatted_change: `${changeFromLastMonth >= 0 ? '+' : ''}${changeFromLastMonth.toFixed(1)}% from last month`
+            },
+            projection: {
+                days_remaining: daysRemaining,
+                required_daily_rate: parseFloat(requiredDailyRate.toFixed(2)),
+                required_daily_formatted: formatCurrency(requiredDailyRate),
+                on_track_to_meet_target: currentDisbursement >= targetAmount || (daysRemaining > 0 && requiredDailyRate <= currentDisbursement / today.getDate())
+            },
+            breakdown: {
+                by_product: productBreakdownResult.map(row => ({
+                    product_id: row.product_id,
+                    product_name: row.product_name || 'Unknown',
+                    loan_count: row.loan_count,
+                    total_disbursed: parseFloat(row.total_disbursed) || 0,
+                    formatted: formatCurrency(parseFloat(row.total_disbursed) || 0),
+                    avg_loan_size: parseFloat(row.avg_loan_size) || 0
+                })),
+                by_officer: officerBreakdownResult.map(row => ({
+                    officer_id: row.officer_id,
+                    officer_name: row.officer_name,
+                    loan_count: row.loan_count,
+                    total_disbursed: parseFloat(row.total_disbursed) || 0,
+                    formatted: formatCurrency(parseFloat(row.total_disbursed) || 0),
+                    avg_loan_size: parseFloat(row.avg_loan_size) || 0
+                }))
+            },
+            daily_trend: dailyTrendResult.map(row => ({
+                date: row.date,
+                loan_count: row.loan_count,
+                daily_total: parseFloat(row.daily_total) || 0,
+                formatted: formatCurrency(parseFloat(row.daily_total) || 0)
+            }))
+        };
+
+        // Response
+        return res.json({
+            success: true,
+            data: responseData
+        });
+
+    } catch (err) {
+        console.error('Error calculating Monthly Disbursement:', err);
+        return res.status(500).json({
+            success: false,
+            error: "Failed to calculate Monthly Disbursement",
+            message: err.message
+        });
+    }
+});
+
 app.listen(5000,()=>{
     console.log('Server is up and running');
 })
