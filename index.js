@@ -2836,27 +2836,33 @@ app.get('/province-branches-performance', async (req, res) => {
                 ) portfolio
             `, [branchId]);
 
-            // Get collections rate
-            const [collectionsResult] = await pool.query(`
+            // Get collections - use separate queries to avoid GROUP BY issues
+            const [collectedResult] = await pool.query(`
                 SELECT 
-                    COALESCE(SUM(lt.principal + lt.interest + lt.fee + lt.penalty), 0) AS total_collected,
-                    COALESCE(SUM(lrs.total_due), 0) AS total_expected,
-                    CASE 
-                        WHEN SUM(lrs.total_due) > 0 
-                        THEN ROUND((SUM(lt.principal + lt.interest + lt.fee + lt.penalty) / SUM(lrs.total_due)) * 100, 2)
-                        ELSE 0 
-                    END AS collection_rate
-                FROM loans l
-                LEFT JOIN loan_transactions lt ON lt.loan_id = l.id
-                    AND lt.transaction_type = 'repayment'
-                    AND lt.date BETWEEN ? AND ?
-                    AND lt.reversed = 0
-                    AND lt.status = 'approved'
-                LEFT JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id
-                    AND lrs.due_date BETWEEN ? AND ?
+                    COALESCE(SUM(lt.principal + lt.interest + lt.fee + lt.penalty), 0) AS total_collected
+                FROM loan_transactions lt
+                JOIN loans l ON lt.loan_id = l.id
                 WHERE l.office_id = ?
+                  AND lt.transaction_type = 'repayment'
+                  AND lt.date BETWEEN ? AND ?
+                  AND lt.reversed = 0
+                  AND lt.status = 'approved'
                   AND l.status IN ('disbursed', 'closed', 'paid')
-            `, [startDate, endDate, startDate, endDate, branchId]);
+            `, [branchId, startDate, endDate]);
+
+            const [expectedResult] = await pool.query(`
+                SELECT 
+                    COALESCE(SUM(lrs.total_due), 0) AS total_expected
+                FROM loan_repayment_schedules lrs
+                JOIN loans l ON lrs.loan_id = l.id
+                WHERE l.office_id = ?
+                  AND lrs.due_date BETWEEN ? AND ?
+                  AND l.status IN ('disbursed', 'closed', 'paid')
+            `, [branchId, startDate, endDate]);
+
+            const totalCollected = parseFloat(collectedResult[0].total_collected) || 0;
+            const totalExpected = parseFloat(expectedResult[0].total_expected) || 0;
+            const collectionRate = totalExpected > 0 ? ((totalCollected / totalExpected) * 100).toFixed(2) : 0;
 
             return {
                 branch_id: branchId,
@@ -2895,9 +2901,9 @@ app.get('/province-branches-performance', async (req, res) => {
                     par_balance: parseFloat(parResult[0].par_balance) || 0
                 },
                 collections: {
-                    rate: parseFloat(collectionsResult[0].collection_rate) || 0,
-                    collected: parseFloat(collectionsResult[0].total_collected) || 0,
-                    expected: parseFloat(collectionsResult[0].total_expected) || 0
+                    rate: parseFloat(collectionRate) || 0,
+                    collected: totalCollected,
+                    expected: totalExpected
                 }
             };
         }));
