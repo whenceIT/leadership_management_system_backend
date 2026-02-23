@@ -2346,7 +2346,7 @@ app.get('/staff-productivity', async (req, res) => {
             collectionsMap[c.loan_officer_id] = c;
         });
 
-        // Get Portfolio at Risk (PAR) per officer
+        // Get Portfolio at Risk (PAR) per officer - using SUM aggregation to comply with GROUP BY
         const [parPerformance] = await pool.query(`
             SELECT 
                 l.loan_officer_id,
@@ -2362,7 +2362,7 @@ app.get('/staff-productivity', async (req, res) => {
                     l.loan_officer_id,
                     l.id,
                     DATEDIFF(CURRENT_DATE, MIN(lrs.due_date)) AS arrears_days,
-                    (lrs.total_due - COALESCE(lrs.principal_paid, 0) - COALESCE(lrs.interest_paid, 0) - COALESCE(lrs.fees_paid, 0) - COALESCE(lrs.penalty_paid, 0)) AS outstanding_balance
+                    SUM(lrs.total_due - COALESCE(lrs.principal_paid, 0) - COALESCE(lrs.interest_paid, 0) - COALESCE(lrs.fees_paid, 0) - COALESCE(lrs.penalty_paid, 0)) AS outstanding_balance
                 FROM loans l
                 JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id
                 WHERE l.status = 'disbursed'
@@ -2818,7 +2818,7 @@ app.get('/province-branches-performance', async (req, res) => {
                   AND disbursement_date BETWEEN ? AND ?
             `, [branchId, startDate, endDate]);
 
-            // Get PAR (Portfolio at Risk)
+            // Get PAR (Portfolio at Risk) - using SUM aggregation to comply with GROUP BY
             const [parResult] = await pool.query(`
                 SELECT 
                     COALESCE(SUM(CASE WHEN arrears_days > 30 THEN outstanding_balance ELSE 0 END), 0) AS par_balance,
@@ -2832,7 +2832,7 @@ app.get('/province-branches-performance', async (req, res) => {
                     SELECT 
                         l.id,
                         DATEDIFF(CURDATE(), MIN(lrs.due_date)) AS arrears_days,
-                        (lrs.total_due - COALESCE(lrs.principal_paid, 0) - COALESCE(lrs.interest_paid, 0) - COALESCE(lrs.fees_paid, 0) - COALESCE(lrs.penalty_paid, 0)) AS outstanding_balance
+                        SUM(lrs.total_due - COALESCE(lrs.principal_paid, 0) - COALESCE(lrs.interest_paid, 0) - COALESCE(lrs.fees_paid, 0) - COALESCE(lrs.penalty_paid, 0)) AS outstanding_balance
                     FROM loans l
                     JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id
                     WHERE l.office_id = ?
@@ -3254,6 +3254,693 @@ app.get('/monthly-disbursement', async (req, res) => {
             success: false,
             error: "Failed to calculate Monthly Disbursement",
             message: err.message
+        });
+    }
+});
+
+/**
+ * POST /api/reviews/signoff
+ * Create a performance review sign-off record
+ */
+app.post('/api/reviews/signoff', async (req, res) => {
+    try {
+        const { 
+            position, 
+            signature, 
+            signedAt, 
+            reviewType, 
+            user_id, 
+            office_id, 
+            notes 
+        } = req.body;
+
+        // Validation
+        if (!position) {
+            return res.status(400).json({
+                success: false,
+                error: 'position is required'
+            });
+        }
+
+        if (!signature) {
+            return res.status(400).json({
+                success: false,
+                error: 'signature is required'
+            });
+        }
+
+        if (!signedAt) {
+            return res.status(400).json({
+                success: false,
+                error: 'signedAt is required'
+            });
+        }
+
+        if (!reviewType) {
+            return res.status(400).json({
+                success: false,
+                error: 'reviewType is required'
+            });
+        }
+
+        // Validate signedAt is a valid date
+        const signedAtDate = new Date(signedAt);
+        if (isNaN(signedAtDate.getTime())) {
+            return res.status(400).json({
+                success: false,
+                error: 'signedAt must be a valid ISO timestamp'
+            });
+        }
+
+        // Insert the sign-off record
+        const [result] = await pool.query(`
+            INSERT INTO review_signoffs 
+            (position, signature, signed_at, review_type, user_id, office_id, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        `, [position, signature, signedAtDate, reviewType, user_id || null, office_id || null, notes || null]);
+
+        // Fetch the inserted record
+        const [newSignoff] = await pool.query(`
+            SELECT * FROM review_signoffs WHERE id = ?
+        `, [result.insertId]);
+
+        res.status(201).json({
+            success: true,
+            message: 'Review sign-off recorded successfully',
+            data: newSignoff[0]
+        });
+
+    } catch (error) {
+        console.error('Error creating review sign-off:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to create review sign-off'
+        });
+    }
+});
+
+/**
+ * GET /api/reviews/signoffs
+ * Get all review sign-offs with optional filtering
+ */
+app.get('/api/reviews/signoffs', async (req, res) => {
+    try {
+        const { 
+            user_id, 
+            office_id, 
+            position, 
+            reviewType, 
+            start_date, 
+            end_date,
+            limit = 50
+        } = req.query;
+
+        let sql = 'SELECT * FROM review_signoffs WHERE 1=1';
+        const params = [];
+
+        if (user_id) {
+            sql += ' AND user_id = ?';
+            params.push(parseInt(user_id));
+        }
+
+        if (office_id) {
+            sql += ' AND office_id = ?';
+            params.push(parseInt(office_id));
+        }
+
+        if (position) {
+            sql += ' AND position = ?';
+            params.push(position);
+        }
+
+        if (reviewType) {
+            sql += ' AND review_type = ?';
+            params.push(reviewType);
+        }
+
+        if (start_date) {
+            sql += ' AND signed_at >= ?';
+            params.push(start_date);
+        }
+
+        if (end_date) {
+            sql += ' AND signed_at <= ?';
+            params.push(end_date);
+        }
+
+        sql += ' ORDER BY created_at DESC LIMIT ?';
+        params.push(parseInt(limit));
+
+        const [signoffs] = await pool.query(sql, params);
+
+        res.json({
+            success: true,
+            count: signoffs.length,
+            data: signoffs
+        });
+
+    } catch (error) {
+        console.error('Error fetching review sign-offs:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch review sign-offs'
+        });
+    }
+});
+
+/**
+ * GET /api/reviews/signoffs/:id
+ * Get a single review sign-off by ID
+ */
+app.get('/api/reviews/signoffs/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const [signoffs] = await pool.query(`
+            SELECT * FROM review_signoffs WHERE id = ?
+        `, [id]);
+
+        if (signoffs.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: 'Review sign-off not found'
+            });
+        }
+
+        res.json({
+            success: true,
+            data: signoffs[0]
+        });
+
+    } catch (error) {
+        console.error('Error fetching review sign-off:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch review sign-off'
+        });
+    }
+});
+
+/**
+ * POST /api/reviews/schedule
+ * Schedule a new performance review
+ */
+app.post('/api/reviews/schedule', async (req, res) => {
+    try {
+        const {
+            position,
+            reviewType,
+            title,
+            description,
+            scheduledDate,
+            scheduledTime,
+            assignee,
+            priority,
+            sendReminder,
+            reminderDaysBefore,
+            user_id,
+            office_id
+        } = req.body;
+
+        // Validate required fields
+        if (!position || !reviewType || !title || !scheduledDate) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing required fields: position, reviewType, title, and scheduledDate are required.'
+            });
+        }
+
+        // Validate title length
+        if (title.trim().length < 3) {
+            return res.status(400).json({
+                success: false,
+                error: 'Review title must be at least 3 characters long.'
+            });
+        }
+
+        // Combine date and time
+        const scheduledDateTime = new Date(`${scheduledDate}T${scheduledTime || '09:00'}`);
+        const now = new Date();
+
+        // Validate scheduled date is in the future
+        if (scheduledDateTime <= now) {
+            return res.status(400).json({
+                success: false,
+                error: 'Scheduled date and time must be in the future.'
+            });
+        }
+
+        // Validate reminder days
+        const reminderDays = reminderDaysBefore || 1;
+        if (sendReminder && (reminderDays < 1 || reminderDays > 30)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Reminder days must be between 1 and 30.'
+            });
+        }
+
+        // Insert the scheduled review
+        const [result] = await pool.query(`
+            INSERT INTO scheduled_reviews 
+            (position, review_type, title, description, scheduled_date_time, assignee, 
+             priority, send_reminder, reminder_days_before, status, created_by, user_id, office_id, 
+             created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?, NOW(), NOW())
+        `, [
+            position,
+            reviewType,
+            title.trim(),
+            description?.trim() || null,
+            scheduledDateTime,
+            assignee || position,
+            priority || 'medium',
+            sendReminder !== false ? 1 : 0,
+            reminderDays,
+            user_id || null,
+            user_id || null,
+            office_id || null
+        ]);
+
+        // Fetch the inserted record
+        const [newReview] = await pool.query(`
+            SELECT * FROM scheduled_reviews WHERE id = ?
+        `, [result.insertId]);
+
+        res.status(201).json({
+            success: true,
+            message: 'Review scheduled successfully',
+            data: {
+                id: newReview[0].id,
+                position: newReview[0].position,
+                reviewType: newReview[0].review_type,
+                title: newReview[0].title,
+                description: newReview[0].description,
+                scheduledDateTime: newReview[0].scheduled_date_time,
+                assignee: newReview[0].assignee,
+                priority: newReview[0].priority,
+                status: newReview[0].status,
+                sendReminder: newReview[0].send_reminder === 1,
+                reminderDaysBefore: newReview[0].reminder_days_before,
+                createdAt: newReview[0].created_at
+            }
+        });
+
+    } catch (error) {
+        console.error('Error scheduling review:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to schedule review'
+        });
+    }
+});
+
+/**
+ * GET /api/reviews/schedule
+ * Get all scheduled reviews with optional filtering
+ */
+app.get('/api/reviews/schedule', async (req, res) => {
+    try {
+        const {
+            position,
+            status,
+            upcoming,
+            user_id,
+            office_id,
+            start_date,
+            end_date,
+            limit = 50
+        } = req.query;
+
+        let sql = 'SELECT * FROM scheduled_reviews WHERE 1=1';
+        const params = [];
+
+        // Filter by position
+        if (position) {
+            sql += ' AND position = ?';
+            params.push(position);
+        }
+
+        // Filter by status
+        if (status) {
+            sql += ' AND status = ?';
+            params.push(status);
+        }
+
+        // Filter by user_id
+        if (user_id) {
+            sql += ' AND (user_id = ? OR created_by = ?)';
+            params.push(parseInt(user_id), parseInt(user_id));
+        }
+
+        // Filter by office_id
+        if (office_id) {
+            sql += ' AND office_id = ?';
+            params.push(parseInt(office_id));
+        }
+
+        // Filter by date range
+        if (start_date) {
+            sql += ' AND scheduled_date_time >= ?';
+            params.push(start_date);
+        }
+
+        if (end_date) {
+            sql += ' AND scheduled_date_time <= ?';
+            params.push(end_date);
+        }
+
+        // Filter for upcoming reviews
+        if (upcoming === 'true') {
+            sql += ' AND scheduled_date_time > NOW() AND status = ?';
+            params.push('scheduled');
+        }
+
+        sql += ' ORDER BY scheduled_date_time ASC LIMIT ?';
+        params.push(parseInt(limit));
+
+        const [reviews] = await pool.query(sql, params);
+
+        res.json({
+            success: true,
+            count: reviews.length,
+            data: reviews.map(review => ({
+                id: review.id,
+                position: review.position,
+                reviewType: review.review_type,
+                title: review.title,
+                description: review.description,
+                scheduledDateTime: review.scheduled_date_time,
+                assignee: review.assignee,
+                priority: review.priority,
+                status: review.status,
+                sendReminder: review.send_reminder === 1,
+                reminderDaysBefore: review.reminder_days_before,
+                createdBy: review.created_by,
+                createdAt: review.created_at,
+                updatedAt: review.updated_at
+            }))
+        });
+
+    } catch (error) {
+        console.error('Error fetching scheduled reviews:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch scheduled reviews'
+        });
+    }
+});
+
+/**
+ * GET /api/reviews/schedule/:id
+ * Get a single scheduled review by ID
+ */
+app.get('/api/reviews/schedule/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const [reviews] = await pool.query(`
+            SELECT * FROM scheduled_reviews WHERE id = ?
+        `, [id]);
+
+        if (reviews.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: 'Scheduled review not found'
+            });
+        }
+
+        const review = reviews[0];
+
+        res.json({
+            success: true,
+            data: {
+                id: review.id,
+                position: review.position,
+                reviewType: review.review_type,
+                title: review.title,
+                description: review.description,
+                scheduledDateTime: review.scheduled_date_time,
+                assignee: review.assignee,
+                priority: review.priority,
+                status: review.status,
+                sendReminder: review.send_reminder === 1,
+                reminderDaysBefore: review.reminder_days_before,
+                createdBy: review.created_by,
+                user_id: review.user_id,
+                office_id: review.office_id,
+                createdAt: review.created_at,
+                updatedAt: review.updated_at
+            }
+        });
+
+    } catch (error) {
+        console.error('Error fetching scheduled review:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch scheduled review'
+        });
+    }
+});
+
+/**
+ * PUT /api/reviews/schedule/:id
+ * Update a scheduled review
+ */
+app.put('/api/reviews/schedule/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const {
+            position,
+            reviewType,
+            title,
+            description,
+            scheduledDate,
+            scheduledTime,
+            assignee,
+            priority,
+            sendReminder,
+            reminderDaysBefore,
+            status
+        } = req.body;
+
+        // Check if review exists
+        const [existingReview] = await pool.query(`
+            SELECT * FROM scheduled_reviews WHERE id = ?
+        `, [id]);
+
+        if (existingReview.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: 'Scheduled review not found'
+            });
+        }
+
+        // Build update query dynamically
+        const updates = [];
+        const params = [];
+
+        if (position !== undefined) {
+            updates.push('position = ?');
+            params.push(position);
+        }
+
+        if (reviewType !== undefined) {
+            updates.push('review_type = ?');
+            params.push(reviewType);
+        }
+
+        if (title !== undefined) {
+            if (title.trim().length < 3) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Review title must be at least 3 characters long.'
+                });
+            }
+            updates.push('title = ?');
+            params.push(title.trim());
+        }
+
+        if (description !== undefined) {
+            updates.push('description = ?');
+            params.push(description?.trim() || null);
+        }
+
+        if (scheduledDate !== undefined || scheduledTime !== undefined) {
+            const currentDate = existingReview[0].scheduled_date_time;
+            const date = scheduledDate || currentDate.toISOString().split('T')[0];
+            const time = scheduledTime || currentDate.toTimeString().slice(0, 5);
+            const scheduledDateTime = new Date(`${date}T${time}`);
+            
+            updates.push('scheduled_date_time = ?');
+            params.push(scheduledDateTime);
+        }
+
+        if (assignee !== undefined) {
+            updates.push('assignee = ?');
+            params.push(assignee);
+        }
+
+        if (priority !== undefined) {
+            updates.push('priority = ?');
+            params.push(priority);
+        }
+
+        if (sendReminder !== undefined) {
+            updates.push('send_reminder = ?');
+            params.push(sendReminder ? 1 : 0);
+        }
+
+        if (reminderDaysBefore !== undefined) {
+            updates.push('reminder_days_before = ?');
+            params.push(reminderDaysBefore);
+        }
+
+        if (status !== undefined) {
+            const validStatuses = ['scheduled', 'in-progress', 'completed', 'cancelled'];
+            if (!validStatuses.includes(status)) {
+                return res.status(400).json({
+                    success: false,
+                    error: `Invalid status. Must be one of: ${validStatuses.join(', ')}`
+                });
+            }
+            updates.push('status = ?');
+            params.push(status);
+        }
+
+        if (updates.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'No valid update fields provided'
+            });
+        }
+
+        updates.push('updated_at = NOW()');
+        params.push(id);
+
+        await pool.query(`
+            UPDATE scheduled_reviews SET ${updates.join(', ')} WHERE id = ?
+        `, params);
+
+        // Fetch the updated record
+        const [updatedReview] = await pool.query(`
+            SELECT * FROM scheduled_reviews WHERE id = ?
+        `, [id]);
+
+        res.json({
+            success: true,
+            message: 'Review updated successfully',
+            data: {
+                id: updatedReview[0].id,
+                title: updatedReview[0].title,
+                status: updatedReview[0].status,
+                scheduledDateTime: updatedReview[0].scheduled_date_time
+            }
+        });
+
+    } catch (error) {
+        console.error('Error updating scheduled review:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to update scheduled review'
+        });
+    }
+});
+
+/**
+ * DELETE /api/reviews/schedule/:id
+ * Cancel/delete a scheduled review
+ */
+app.delete('/api/reviews/schedule/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // Check if review exists
+        const [existingReview] = await pool.query(`
+            SELECT * FROM scheduled_reviews WHERE id = ?
+        `, [id]);
+
+        if (existingReview.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: 'Scheduled review not found'
+            });
+        }
+
+        // Delete the review
+        await pool.query(`
+            DELETE FROM scheduled_reviews WHERE id = ?
+        `, [id]);
+
+        res.json({
+            success: true,
+            message: 'Scheduled review cancelled successfully'
+        });
+
+    } catch (error) {
+        console.error('Error deleting scheduled review:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to cancel scheduled review'
+        });
+    }
+});
+
+/**
+ * PATCH /api/reviews/schedule/:id/status
+ * Update only the status of a scheduled review
+ */
+app.patch('/api/reviews/schedule/:id/status', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body;
+
+        if (!status) {
+            return res.status(400).json({
+                success: false,
+                error: 'status is required'
+            });
+        }
+
+        const validStatuses = ['scheduled', 'in-progress', 'completed', 'cancelled'];
+        if (!validStatuses.includes(status)) {
+            return res.status(400).json({
+                success: false,
+                error: `Invalid status. Must be one of: ${validStatuses.join(', ')}`
+            });
+        }
+
+        // Check if review exists
+        const [existingReview] = await pool.query(`
+            SELECT * FROM scheduled_reviews WHERE id = ?
+        `, [id]);
+
+        if (existingReview.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: 'Scheduled review not found'
+            });
+        }
+
+        // Update status
+        await pool.query(`
+            UPDATE scheduled_reviews SET status = ?, updated_at = NOW() WHERE id = ?
+        `, [status, id]);
+
+        res.json({
+            success: true,
+            message: 'Review status updated successfully',
+            data: {
+                id: parseInt(id),
+                previousStatus: existingReview[0].status,
+                newStatus: status
+            }
+        });
+
+    } catch (error) {
+        console.error('Error updating review status:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to update review status'
         });
     }
 });
