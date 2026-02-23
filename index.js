@@ -3945,6 +3945,326 @@ app.patch('/api/reviews/schedule/:id/status', async (req, res) => {
     }
 });
 
+/**
+ * GET /branch-collection-waterfall
+ * Calculate Collections Waterfall for a branch/office
+ * 
+ * Query Parameters:
+ * - office_id (required): Branch office ID
+ * - start_date (optional): Start date for the period (YYYY-MM-DD) - default: 2023-02-01
+ * - end_date (optional): End date for the period (YYYY-MM-DD) - default: current date
+ * 
+ * Collections Waterfall Metrics:
+ * - Due: Total amount expected within a period (from loan_repayment_schedules.total_due)
+ * - Collected: Full payments received (from loan_transactions where payment_apply_to = 'full_payment')
+ * - Partial: Partial payments received (from loan_transactions where payment_apply_to = 'part_payment')
+ * - Overdue: Uncollected amounts past due date
+ * - Compliance: (Collected/Due) × 100
+ * 
+ * Database Enums Used:
+ * - transaction_type: 'repayment' (from loan_transactions)
+ * - payment_apply_to: 'full_payment', 'part_payment', 'reloan_payment' (from loan_transactions)
+ * - loan status: 'disbursed', 'closed', 'paid' (from loans)
+ */
+app.get('/branch-collection-waterfall', async (req, res) => {
+    try {
+        const { office_id, start_date, end_date } = req.query;
+
+        // Validation
+        if (!office_id) {
+            return res.status(400).json({
+                success: false,
+                error: "office_id is required"
+            });
+        }
+
+        // Set default dates
+        const defaultStartDate = '2023-02-01';
+        const today = new Date();
+        const defaultEndDate = today.toISOString().split('T')[0];
+        
+        const startDate = start_date || defaultStartDate;
+        const endDate = end_date || defaultEndDate;
+
+        // Get branch info
+        const [branchInfoResult] = await pool.query(`
+            SELECT id, name FROM offices WHERE id = ?
+        `, [office_id]);
+
+        if (branchInfoResult.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: "Branch/Office not found"
+            });
+        }
+
+        // 1. DUE AMOUNT - Total amount expected to be collected within the period
+        // Sum of total_due from repayment schedules within the period
+        const [dueResult] = await pool.query(`
+            SELECT 
+                COALESCE(SUM(lrs.total_due), 0) AS total_due,
+                COALESCE(SUM(lrs.principal), 0) AS principal_due,
+                COALESCE(SUM(lrs.interest), 0) AS interest_due,
+                COALESCE(SUM(lrs.fees), 0) AS fees_due,
+                COALESCE(SUM(lrs.penalty), 0) AS penalty_due,
+                COUNT(DISTINCT lrs.loan_id) AS loans_with_due,
+                COUNT(*) AS total_installments
+            FROM loan_repayment_schedules lrs
+            JOIN loans l ON lrs.loan_id = l.id
+            WHERE l.office_id = ?
+              AND lrs.due_date BETWEEN ? AND ?
+              AND l.status IN ('disbursed', 'closed', 'paid')
+        `, [office_id, startDate, endDate]);
+
+        // 2. COLLECTED AMOUNT - Full payments received
+        // Sum of credits from repayment transactions (full_payment only, or NULL for legacy records)
+        // payment_apply_to enum: 'full_payment', 'part_payment', 'reloan_payment'
+        const [collectedResult] = await pool.query(`
+            SELECT 
+                COALESCE(SUM(lt.credit), 0) AS total_collected,
+                COALESCE(SUM(lt.principal), 0) AS principal_collected,
+                COALESCE(SUM(lt.interest), 0) AS interest_collected,
+                COALESCE(SUM(lt.fee), 0) AS fees_collected,
+                COALESCE(SUM(lt.penalty), 0) AS penalty_collected,
+                COUNT(DISTINCT lt.loan_id) AS loans_collected,
+                COUNT(*) AS payment_count
+            FROM loan_transactions lt
+            JOIN loans l ON lt.loan_id = l.id
+            WHERE l.office_id = ?
+              AND lt.transaction_type = 'repayment'
+              AND (lt.payment_apply_to = 'full_payment' OR lt.payment_apply_to IS NULL)
+              AND lt.date BETWEEN ? AND ?
+              AND lt.reversed = 0
+              AND lt.status = 'approved'
+              AND l.status IN ('disbursed', 'closed', 'paid')
+        `, [office_id, startDate, endDate]);
+
+        // 3. PARTIAL AMOUNT - Partial payments received
+        // Sum of credits from partial payment transactions
+        const [partialResult] = await pool.query(`
+            SELECT 
+                COALESCE(SUM(lt.credit), 0) AS total_partial,
+                COALESCE(SUM(lt.principal), 0) AS principal_partial,
+                COALESCE(SUM(lt.interest), 0) AS interest_partial,
+                COALESCE(SUM(lt.fee), 0) AS fees_partial,
+                COALESCE(SUM(lt.penalty), 0) AS penalty_partial,
+                COUNT(DISTINCT lt.loan_id) AS loans_with_partial,
+                COUNT(*) AS partial_payment_count
+            FROM loan_transactions lt
+            JOIN loans l ON lt.loan_id = l.id
+            WHERE l.office_id = ?
+              AND lt.transaction_type = 'repayment'
+              AND lt.payment_apply_to = 'part_payment'
+              AND lt.date BETWEEN ? AND ?
+              AND lt.reversed = 0
+              AND lt.status = 'approved'
+              AND l.status IN ('disbursed', 'closed', 'paid')
+        `, [office_id, startDate, endDate]);
+
+        // 4. OVERDUE AMOUNT - Uncollected amounts past due date
+        // Sum of unpaid amounts from schedules past due date
+        const [overdueResult] = await pool.query(`
+            SELECT 
+                COALESCE(SUM(
+                    lrs.total_due - 
+                    COALESCE(lrs.principal_paid, 0) - 
+                    COALESCE(lrs.interest_paid, 0) - 
+                    COALESCE(lrs.fees_paid, 0) - 
+                    COALESCE(lrs.penalty_paid, 0)
+                ), 0) AS total_overdue,
+                COALESCE(SUM(lrs.principal - COALESCE(lrs.principal_paid, 0)), 0) AS principal_overdue,
+                COALESCE(SUM(lrs.interest - COALESCE(lrs.interest_paid, 0)), 0) AS interest_overdue,
+                COALESCE(SUM(lrs.fees - COALESCE(lrs.fees_paid, 0)), 0) AS fees_overdue,
+                COALESCE(SUM(lrs.penalty - COALESCE(lrs.penalty_paid, 0)), 0) AS penalty_overdue,
+                COUNT(DISTINCT lrs.loan_id) AS loans_overdue,
+                COUNT(*) AS overdue_installments
+            FROM loan_repayment_schedules lrs
+            JOIN loans l ON lrs.loan_id = l.id
+            WHERE l.office_id = ?
+              AND lrs.due_date < CURDATE()
+              AND lrs.paid = 0
+              AND l.status = 'disbursed'
+        `, [office_id]);
+
+        // 5. COMPLIANCE RATE - (Collected / Due) × 100
+        const totalDue = parseFloat(dueResult[0].total_due) || 0;
+        const totalCollected = parseFloat(collectedResult[0].total_collected) || 0;
+        const totalPartial = parseFloat(partialResult[0].total_partial) || 0;
+        const totalOverdue = parseFloat(overdueResult[0].total_overdue) || 0;
+        
+        // Compliance calculation: (Collected / Due) × 100
+        const complianceRate = totalDue > 0 ? ((totalCollected / totalDue) * 100).toFixed(2) : 0;
+
+        // Get total collected (including partial) for overall collection
+        const totalAllCollected = totalCollected + totalPartial;
+        const overallCollectionRate = totalDue > 0 ? ((totalAllCollected / totalDue) * 100).toFixed(2) : 0;
+
+        // Get collection breakdown by loan officer
+        const [officerBreakdown] = await pool.query(`
+            SELECT 
+                u.id AS officer_id,
+                CONCAT(u.first_name, ' ', u.last_name) AS officer_name,
+                COALESCE(SUM(lt.credit), 0) AS total_collected,
+                COUNT(DISTINCT lt.loan_id) AS loans_collected,
+                COUNT(*) AS payment_count
+            FROM loan_transactions lt
+            JOIN loans l ON lt.loan_id = l.id
+            JOIN users u ON l.loan_officer_id = u.id
+            WHERE l.office_id = ?
+              AND lt.transaction_type = 'repayment'
+              AND lt.date BETWEEN ? AND ?
+              AND lt.reversed = 0
+              AND lt.status = 'approved'
+              AND l.status IN ('disbursed', 'closed', 'paid')
+            GROUP BY u.id, u.first_name, u.last_name
+            ORDER BY total_collected DESC
+        `, [office_id, startDate, endDate]);
+
+        // Get monthly trend for the period
+        const [monthlyTrend] = await pool.query(`
+            SELECT 
+                DATE_FORMAT(lt.date, '%Y-%m') AS month,
+                COALESCE(SUM(lt.credit), 0) AS monthly_collected,
+                COUNT(*) AS payment_count
+            FROM loan_transactions lt
+            JOIN loans l ON lt.loan_id = l.id
+            WHERE l.office_id = ?
+              AND lt.transaction_type = 'repayment'
+              AND lt.date BETWEEN ? AND ?
+              AND lt.reversed = 0
+              AND lt.status = 'approved'
+              AND l.status IN ('disbursed', 'closed', 'paid')
+            GROUP BY DATE_FORMAT(lt.date, '%Y-%m')
+            ORDER BY month DESC
+        `, [office_id, startDate, endDate]);
+
+        // Get expected vs collected monthly comparison
+        const [expectedMonthly] = await pool.query(`
+            SELECT 
+                DATE_FORMAT(lrs.due_date, '%Y-%m') AS month,
+                COALESCE(SUM(lrs.total_due), 0) AS monthly_expected
+            FROM loan_repayment_schedules lrs
+            JOIN loans l ON lrs.loan_id = l.id
+            WHERE l.office_id = ?
+              AND lrs.due_date BETWEEN ? AND ?
+              AND l.status IN ('disbursed', 'closed', 'paid')
+            GROUP BY DATE_FORMAT(lrs.due_date, '%Y-%m')
+            ORDER BY month DESC
+        `, [office_id, startDate, endDate]);
+
+        // Build response
+        const responseData = {
+            metric: "Collections Waterfall",
+            office_id: parseInt(office_id),
+            office_name: branchInfoResult[0].name,
+            period: {
+                start_date: startDate,
+                end_date: endDate
+            },
+            currency: "ZMW",
+            summary: {
+                due: {
+                    total: totalDue,
+                    formatted: `ZMW ${totalDue.toLocaleString('en-ZM', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                    breakdown: {
+                        principal: parseFloat(dueResult[0].principal_due) || 0,
+                        interest: parseFloat(dueResult[0].interest_due) || 0,
+                        fees: parseFloat(dueResult[0].fees_due) || 0,
+                        penalty: parseFloat(dueResult[0].penalty_due) || 0
+                    },
+                    loans_count: dueResult[0].loans_with_due,
+                    installments_count: dueResult[0].total_installments
+                },
+                collected: {
+                    total: totalCollected,
+                    formatted: `ZMW ${totalCollected.toLocaleString('en-ZM', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                    breakdown: {
+                        principal: parseFloat(collectedResult[0].principal_collected) || 0,
+                        interest: parseFloat(collectedResult[0].interest_collected) || 0,
+                        fees: parseFloat(collectedResult[0].fees_collected) || 0,
+                        penalty: parseFloat(collectedResult[0].penalty_collected) || 0
+                    },
+                    loans_count: collectedResult[0].loans_collected,
+                    payments_count: collectedResult[0].payment_count
+                },
+                partial: {
+                    total: totalPartial,
+                    formatted: `ZMW ${totalPartial.toLocaleString('en-ZM', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                    breakdown: {
+                        principal: parseFloat(partialResult[0].principal_partial) || 0,
+                        interest: parseFloat(partialResult[0].interest_partial) || 0,
+                        fees: parseFloat(partialResult[0].fees_partial) || 0,
+                        penalty: parseFloat(partialResult[0].penalty_partial) || 0
+                    },
+                    loans_count: partialResult[0].loans_with_partial,
+                    payments_count: partialResult[0].partial_payment_count
+                },
+                overdue: {
+                    total: totalOverdue,
+                    formatted: `ZMW ${totalOverdue.toLocaleString('en-ZM', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                    breakdown: {
+                        principal: parseFloat(overdueResult[0].principal_overdue) || 0,
+                        interest: parseFloat(overdueResult[0].interest_overdue) || 0,
+                        fees: parseFloat(overdueResult[0].fees_overdue) || 0,
+                        penalty: parseFloat(overdueResult[0].penalty_overdue) || 0
+                    },
+                    loans_count: overdueResult[0].loans_overdue,
+                    installments_count: overdueResult[0].overdue_installments
+                },
+                compliance: {
+                    rate: parseFloat(complianceRate),
+                    formatted: `${complianceRate}%`,
+                    status: parseFloat(complianceRate) >= 95 ? 'excellent' :
+                            parseFloat(complianceRate) >= 80 ? 'good' :
+                            parseFloat(complianceRate) >= 70 ? 'average' : 'needs_attention'
+                }
+            },
+            analysis: {
+                total_collections: totalAllCollected,
+                total_collections_formatted: `ZMW ${totalAllCollected.toLocaleString('en-ZM', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                overall_collection_rate: parseFloat(overallCollectionRate),
+                collection_gap: totalDue - totalCollected,
+                collection_gap_formatted: `ZMW ${Math.max(0, totalDue - totalCollected).toLocaleString('en-ZM', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                uncollected_amount: Math.max(0, totalDue - totalAllCollected),
+                uncollected_formatted: `ZMW ${Math.max(0, totalDue - totalAllCollected).toLocaleString('en-ZM', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            },
+            officer_breakdown: officerBreakdown.map(officer => ({
+                officer_id: officer.officer_id,
+                officer_name: officer.officer_name,
+                total_collected: parseFloat(officer.total_collected) || 0,
+                formatted: `ZMW ${(parseFloat(officer.total_collected) || 0).toLocaleString('en-ZM', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                loans_collected: officer.loans_collected,
+                payment_count: officer.payment_count
+            })),
+            monthly_trend: monthlyTrend.map(month => ({
+                month: month.month,
+                collected: parseFloat(month.monthly_collected) || 0,
+                formatted: `ZMW ${(parseFloat(month.monthly_collected) || 0).toLocaleString('en-ZM', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                payment_count: month.payment_count
+            })),
+            expected_monthly: expectedMonthly.map(month => ({
+                month: month.month,
+                expected: parseFloat(month.monthly_expected) || 0,
+                formatted: `ZMW ${(parseFloat(month.monthly_expected) || 0).toLocaleString('en-ZM', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            }))
+        };
+
+        // Response
+        return res.json({
+            success: true,
+            data: responseData
+        });
+
+    } catch (err) {
+        console.error('Error calculating Collections Waterfall:', err);
+        return res.status(500).json({
+            success: false,
+            error: "Failed to calculate Collections Waterfall",
+            message: err.message
+        });
+    }
+});
+
 app.listen(5000,()=>{
     console.log('Server is up and running');
 })
