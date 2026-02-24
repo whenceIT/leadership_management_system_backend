@@ -3956,8 +3956,8 @@ app.patch('/api/reviews/schedule/:id/status', async (req, res) => {
  * 
  * Collections Waterfall Metrics:
  * - Due: Total amount expected within a period (from loan_repayment_schedules.total_due)
- * - Collected: Full payments received (from loan_transactions where payment_apply_to = 'full_payment')
- * - Partial: Partial payments received (from loan_transactions where payment_apply_to = 'part_payment')
+ * - Collected: Full payments + reloan payments (payment_apply_to = 'full_payment' OR 'reloan_payment')
+ * - Partial: Partial payments only (payment_apply_to = 'part_payment')
  * - Overdue: Uncollected amounts past due date
  * - Compliance: (Collected/Due) × 100
  * 
@@ -4016,9 +4016,10 @@ app.get('/branch-collection-waterfall', async (req, res) => {
               AND l.status IN ('disbursed', 'closed', 'paid')
         `, [office_id, startDate, endDate]);
 
-        // 2. COLLECTED AMOUNT - Full payments received
-        // Sum of credits from repayment transactions (full_payment only, or NULL for legacy records)
+        // 2. COLLECTED AMOUNT - Full payments and reloan payments received
+        // Sum of credits from repayment transactions (full_payment, reloan_payment, or NULL for legacy)
         // payment_apply_to enum: 'full_payment', 'part_payment', 'reloan_payment'
+        // Note: part_payment is tracked separately as "Partial"
         const [collectedResult] = await pool.query(`
             SELECT 
                 COALESCE(SUM(lt.credit), 0) AS total_collected,
@@ -4032,7 +4033,7 @@ app.get('/branch-collection-waterfall', async (req, res) => {
             JOIN loans l ON lt.loan_id = l.id
             WHERE l.office_id = ?
               AND lt.transaction_type = 'repayment'
-              AND (lt.payment_apply_to = 'full_payment' OR lt.payment_apply_to IS NULL)
+              AND (lt.payment_apply_to IN ('full_payment', 'reloan_payment') OR lt.payment_apply_to IS NULL)
               AND lt.date BETWEEN ? AND ?
               AND lt.reversed = 0
               AND lt.status = 'approved'
