@@ -340,6 +340,16 @@ Branch Statistics:
 10. Loan Portfolio: Total principal amount of all disbursed loans
 11. Pending Transactions: Number of pending loan transactions
 
+**Tables/Columns Used:**
+- `users` table: id, office_id, status (for staff metrics)
+- `leave_days` table: user_id, office_id, status (for leave metrics)
+- `loans` table: id, office_id, status, principal (for loan metrics)
+- `clients` table: id, office_id, status (for client metrics)
+- `advances` table: id, office_id, status (for advance metrics)
+- `expenses` table: id, office_id, status (for expense metrics)
+- `tickets` table: id, status (for ticket metrics)
+- `loan_transactions` table: id, office_id (for transaction metrics)
+
 All metrics are calculated in real-time for the specified branch.
 ```
 
@@ -527,6 +537,10 @@ Loan Consultant Metrics:
 6. Pending Loans: Number of loans with status in ['pending', 'new', 'under_review']
 7. Declined: Number of loans with status in ['declined', 'rejected']
 
+**Tables/Columns Used:**
+- `loans` table: id, status, created_at, disbursement_date, office_id, loan_officer_id, province_id
+- `offices` table: id, province_id (for province filtering)
+
 All metrics are calculated for the specified period and can be filtered by office, province, or specific loan officer.
 ```
 
@@ -559,6 +573,24 @@ All metrics are calculated for the specified period and can be filtered by offic
 **Endpoint:** `GET /user-tiers/:userId`
 
 **Description:** Get user tier information including current tier, next tier, benefits, and historical tiers
+
+**Formula (Simple Terms):**
+```
+User Tier Assignment:
+- Current Tier: Based on user's current portfolio value and tier definitions
+- Next Tier: Next tier requiring higher portfolio value
+- Progress: (Current Portfolio / Next Tier Minimum) × 100
+
+**Tables/Columns Used:**
+- `user_tiers` table: user_id, tier_id, effective_from, effective_to, current_portfolio_value, progress_percentage
+- `tier_definitions` table: id, name, description, tier_range, minimum_portfolio_value, badge_color, text_color, is_active, order_index
+- `tier_benefits` table: id, tier_id, benefit_type, description, value, effective_from, effective_to
+
+**Key Logic:**
+1. Get current user tier from user_tiers where effective_to IS NULL
+2. Find next tier from tier_definitions where minimum_portfolio_value > current tier's minimum
+3. Calculate progress percentage towards next tier
+4. Fetch tier benefits from tier_benefits
 
 **Parameters:**
 - `userId`: User ID (URL parameter)
@@ -638,9 +670,13 @@ All metrics are calculated for the specified period and can be filtered by offic
 ```
 Month-1 Default Rate = (Number of Loans Defaulted in Month 1 / Total Loans Disbursed in the Period) × 100
 
+**Tables/Columns Used:**
+- `loans` table: id, status, disbursement_date, written_off_date, office_id
+- `loan_repayment_schedules` table: loan_id, due_date, paid
+
 - A loan is considered "Month-1 Default" if:
-  1. It was written off within 30 days of disbursement, OR
-  2. It's still disbursed but has arrears (unpaid amounts) for 30 days or more
+  1. `status` = 'written_off' and DATEDIFF(written_off_date, disbursement_date) ≤ 30
+  2. `status` = 'disbursed' and exists unpaid schedules where DATEDIFF(CURDATE(), due_date) ≥ 30
 
 Target: ≤ 3.0% (considered "on target")
 ```
@@ -677,8 +713,13 @@ Target: ≤ 3.0% (considered "on target")
 ```
 Collections Rate = (Total Amount Collected / Total Amount Due for Collection) × 100
 
-- Total Amount Collected: Sum of all loan repayments (principal + interest + fees + penalties) received
-- Total Amount Due: Sum of all scheduled repayments (principal + interest + fees + penalties) for the period
+**Tables/Columns Used:**
+- `loan_transactions` table: loan_id, transaction_type, principal, interest, fee, penalty, date, reversed, status
+- `loan_repayment_schedules` table: loan_id, due_date, total_due, principal, interest, fees, penalty
+- `loans` table: id, office_id, status
+
+- Total Amount Collected: SUM(principal + interest + fee + penalty) from transactions where transaction_type = 'repayment', reversed = 0, status = 'approved'
+- Total Amount Due: SUM(total_due) from repayment schedules where due_date is in the period
 
 Target: ≥ 93.0% (considered "on target")
 ```
@@ -719,10 +760,18 @@ Target: ≥ 93.0% (considered "on target")
 ```
 Active Loans Count = Number of loans with status = 'disbursed'
 
+**Tables/Columns Used:**
+- `loans` table: id, office_id, status, principal, interest_rate, disbursement_date, expected_maturity_date, loan_term, loan_term_type, loan_product_id, loan_officer_id, principal_derived, interest_derived, fees_derived, penalty_derived
+- `offices` table: id, name, branch_capacity
+- `loan_repayment_schedules` table: loan_id, total_due, principal_paid, interest_paid, fees_paid, penalty_paid, paid, due_date
+- `clients` table: id, first_name, last_name, mobile
+- `users` table: id, first_name, last_name
+- `loan_products` table: id, name
+
 Key Metrics:
-- Active Loans Count: Total number of currently disbursed loans
-- Outstanding Balance: Total amount still owed (principal + interest + fees + penalties)
-- Capacity Utilization: (Active Loans / Branch Capacity) × 100
+- Active Loans Count: COUNT(*) from loans where status = 'disbursed'
+- Outstanding Balance: SUM(total_due - principal_paid - interest_paid - fees_paid - penalty_paid) from repayment schedules
+- Capacity Utilization: (Active Loans / branch_capacity) × 100 from offices table
 - Weekly Change: (New Disbursements - Closed/Written-off Loans) in the last week
 
 Capacity Status:
@@ -764,11 +813,22 @@ Capacity Status:
 ```
 Staff Productivity = (Weighted Score of Individual KPIs) × 100
 
+**Tables/Columns Used:**
+- `target_tracker` table: user_id, given_out, target, cycle_date
+- `loan_transactions` table: loan_id, transaction_type, principal, interest, fee, penalty, date
+- `loan_repayment_schedules` table: loan_id, due_date, total_due
+- `loans` table: id, loan_officer_id, office_id, status, disbursement_date
+- `clients` table: id, staff_id, status, joined_date
+
 Weights:
-- Disbursement Target Achievement: 40% (how much of the loan disbursement target was met)
-- Collections Rate: 30% (how much of the expected collections was received)
-- Portfolio Quality (PAR): 20% (lower PAR is better - measures loans in arrears)
-- Client Acquisition: 10% (number of new clients acquired)
+- Disbursement Target Achievement (40%): (Actual Disbursement / Target) × 100
+  - From `target_tracker` table: given_out (actual), target
+- Collections Rate (30%): (Total Collected / Total Due) × 100
+  - From `loan_transactions` and `loan_repayment_schedules`
+- Portfolio Quality (PAR) (20%): (Loans with arrears > 30 days / Total Active Loans) × 100
+  - From `loans` and `loan_repayment_schedules`
+- Client Acquisition (10%): (New Clients / Target) × 100
+  - From `clients` table: joined_date
 
 Performance Ratings:
 - ≥ 90%: Excellent
@@ -817,20 +877,30 @@ Target: ≥ 80% (considered "on target")
 ```
 Net Contribution = Total Income - Total Expenses
 
+**Tables/Columns Used:**
+- `loan_transactions` table: loan_id, transaction_type, interest, fee, penalty, principal, date, reversed, status
+- `expenses` table: office_id, amount, date, status
+- `other_income` table: office_id, amount, date, status
+- `ledger_income` table: office_id, amount, date
+- `loans` table: id, office_id, status, principal_derived, interest_derived, fees_derived, penalty_derived
+- `clients` table: id, office_id, status
+- `offices` table: id, province_id, name, manager_id, branch_capacity, active
+- `users` table: id, first_name, last_name
+
 Income Breakdown:
-- Interest Income: Interest collected from loans
-- Fee Income: Fees collected from loans
-- Penalty Income: Penalties collected from loans
-- Other Income: Non-loan related income
-- Ledger Income: Income from the general ledger
+- Interest Income: SUM(interest) from loan_transactions (transaction_type = 'repayment')
+- Fee Income: SUM(fee) from loan_transactions (transaction_type = 'repayment')
+- Penalty Income: SUM(penalty) from loan_transactions (transaction_type = 'repayment')
+- Other Income: SUM(amount) from other_income (status = 'approved')
+- Ledger Income: SUM(amount) from ledger_income
 
 Key Metrics:
-- Net Contribution: Total income minus total expenses (profit/loss)
-- Portfolio Value: Total outstanding balance of all loans
-- PAR (Portfolio at Risk): Percentage of loans with arrears > 30 days
+- Net Contribution: Total income - Total Expenses (SUM from expenses table)
+- Portfolio Value: SUM(principal_derived + interest_derived + fees_derived + penalty_derived) from loans
+- PAR (Portfolio at Risk): (Loans with arrears > 30 days / Total Active Loans) × 100
 - Collections Rate: (Total Collected / Total Expected) × 100
-- Active Loans: Number of currently disbursed loans
-- Active Clients: Number of active clients
+- Active Loans: Number of loans with status = 'disbursed'
+- Active Clients: Number of clients with status = 'active'
 
 Branches are ranked by net contribution (highest to lowest)
 ```
@@ -865,8 +935,13 @@ Branches are ranked by net contribution (highest to lowest)
 ```
 Monthly Disbursement = Total amount of loans disbursed in the month
 
-- Only loans with status = 'disbursed' are counted
-- Calculated by summing the approved amount of all disbursed loans
+**Tables/Columns Used:**
+- `loans` table: id, office_id, status, disbursement_date, approved_amount
+- `users` table: id, office_id (to get office from user_id)
+- `loan_products` table: id, name (for product breakdown)
+
+- Only loans with `status` = 'disbursed' are counted
+- Calculated by summing `approved_amount` of all disbursed loans where disbursement_date is in the period
 
 Status Indicators:
 - On Track: ≥ Target (default: K450,000+)
@@ -1132,10 +1207,15 @@ Collections Waterfall Metrics:
 4. Overdue: Uncollected amounts past the due date
 5. Compliance: (Collected / Due) × 100
 
-Key Definitions:
-- Full Payment: Payment that covers the entire scheduled amount
-- Partial Payment: Payment that covers only part of the scheduled amount
-- Overdue: Amount not paid by the due date
+**Tables/Columns Used:**
+- `loan_repayment_schedules` table: loan_id, due_date, total_due, principal, interest, fees, penalty, paid
+- `loan_transactions` table: loan_id, transaction_type, payment_apply_to, credit, principal, interest, fee, penalty, date, reversed, status
+- `loans` table: id, office_id, status
+
+**Key Definitions:**
+- Full Payment: payment_apply_to in ('full_payment', 'reloan_payment') or NULL
+- Partial Payment: payment_apply_to = 'part_payment'
+- Overdue: due_date < CURDATE() and paid = 0
 
 Compliance Target: ≥ 95% (Excellent), ≥ 80% (Good), ≥ 70% (Average), < 70% (Needs Attention)
 ```

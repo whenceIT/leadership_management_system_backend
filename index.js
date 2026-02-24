@@ -325,6 +325,10 @@ app.get("/loan/:id", async (req, res) => {
 })
 
 
+// KPI Scores APIs
+const kpiScoresRouter = require('./api/kpi_scores');
+app.use('/api/kpi-scores', kpiScoresRouter);
+
 app.get("/offices",async(req,res)=>{
     try{
         const offices =  await pool.query(`SELECT * FROM offices`);
@@ -2734,7 +2738,6 @@ app.get('/province-branches-performance', async (req, res) => {
                 WHERE l.office_id = ?
                   AND lt.transaction_type = 'repayment'
                   AND lt.date BETWEEN ? AND ?
-                  AND lt.reversed = 0
                   AND lt.status = 'approved'
             `, [branchId, startDate, endDate]);
 
