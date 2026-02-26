@@ -6,11 +6,11 @@ const router = express.Router();
 
 // Import individual KPI score routers
 const kpiScoresRouter = require('./kpiScores');
-const monthlyDisbursementRouter = require('./monthlyDisbursement');
-const month1DefaultRateRouter = require('./month1DefaultRate');
-const lcsAtK50KTierRouter = require('./lcsAtK50KTier');
-const branchNetContributionRouter = require('./branchNetContribution');
-const branchRecoveryRateMonth4Router = require('./branchRecoveryRateMonth4');
+const monthlyDisbursementRouter = require('./branch/monthlyDisbursement');
+const month1DefaultRateRouter = require('./branch/month1DefaultRate');
+const lcsAtK50KTierRouter = require('./branch/lcsAtK50KTier');
+const branchNetContributionRouter = require('./branch/branchNetContribution');
+const branchRecoveryRateMonth4Router = require('./branch/branchRecoveryRateMonth4');
 
 // Mount routers
 router.use('/', kpiScoresRouter);

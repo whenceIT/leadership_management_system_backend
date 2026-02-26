@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const pool = require('../../db');
+const pool = require('../../../db');
 
 /**
  * @route POST /api/kpi-scores/lcs-at-k50k-tier
