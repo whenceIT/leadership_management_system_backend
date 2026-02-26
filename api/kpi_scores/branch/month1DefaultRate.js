@@ -2,6 +2,9 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../../../db');
 
+// Middleware to parse JSON request bodies
+router.use(express.json());
+
 /**
  * @route POST /api/kpi-scores/month1-default-rate
  * @desc Record Month-1 Default Rate KPI score
@@ -9,7 +12,7 @@ const pool = require('../../../db');
  */
 router.post('/', async (req, res) => {
   try {
-    const { user_id, kpi_id, office_id, province_id, start_date, end_date } = req.body;
+    const { user_id, kpi_id, office_id, province_id, start_date, end_date, score } = req.body;
 
     // Validate required fields
     if (!user_id || !kpi_id || !office_id) {
@@ -30,7 +33,7 @@ router.post('/', async (req, res) => {
     // Get KPI from database to verify it's the correct one
     const [kpiResult] = await pool.query(`
       SELECT * FROM smart_kpis 
-      WHERE id = ? AND name = 'Month-1 Default Rate' AND position_id = 5
+      WHERE id = ? AND position_id = 5
     `, [kpi_id]);
 
     if (kpiResult.length === 0) {
@@ -42,33 +45,47 @@ router.post('/', async (req, res) => {
 
     const kpi = kpiResult[0];
 
-    // Calculate Month-1 Default Rate: (Number of loans defaulted within 30 days of disbursement / Total disbursed loans) * 100
-    const [defaultRateResult] = await pool.query(`
-      SELECT 
-        COUNT(*) AS total_disbursed,
-        SUM(CASE 
-            WHEN l.status = 'written_off' 
-                 AND DATEDIFF(l.written_off_date, l.disbursement_date) <= 30 
-            THEN 1 
-            WHEN l.status = 'disbursed' 
-                 AND EXISTS (
-                     SELECT 1 FROM loan_repayment_schedules lrs 
-                     WHERE lrs.loan_id = l.id 
-                       AND lrs.paid = 0 
-                       AND DATEDIFF(CURDATE(), lrs.due_date) >= 30
-                 )
-            THEN 1
-            ELSE 0 
-        END) AS defaulted_in_month1
-      FROM loans l
-      WHERE l.office_id = ?
-        AND l.disbursement_date BETWEEN ? AND ?
-        AND l.status IN ('disbursed', 'written_off', 'closed', 'paid')
-    `, [office_id, effectiveStartDate, effectiveEndDate]);
+    let finalScore;
+    let calculationDetails;
 
-    const totalDisbursed = defaultRateResult[0].total_disbursed || 0;
-    const defaultedInMonth1 = defaultRateResult[0].defaulted_in_month1 || 0;
-    const defaultRate = totalDisbursed > 0 ? ((defaultedInMonth1 / totalDisbursed) * 100).toFixed(2) : 0;
+    if (score !== undefined) {
+      // If score is provided, use it directly (manual entry)
+      finalScore = parseFloat(score);
+      calculationDetails = {
+        manual_entry: true,
+        provided_score: finalScore
+      };
+    } else {
+      // Calculate Month-1 Default Rate: (Number of loans defaulted within 30 days of disbursement / Total disbursed loans) * 100
+      const [totalDisbursedResult] = await pool.query(`
+        SELECT 
+          COUNT(*) AS total_disbursed
+        FROM loans l
+        WHERE l.office_id = ?
+          AND l.disbursement_date BETWEEN ? AND ?
+          AND l.status = 'disbursed'
+      `, [office_id, effectiveStartDate, effectiveEndDate]);      
+      
+      const [defaultedInMonth1Result] = await pool.query(`
+        SELECT COUNT(*) AS defaulted_in_month1 FROM loans l 
+        WHERE l.office_id = ? 
+        AND l.expected_first_repayment_date <= DATE_SUB(CURDATE(), INTERVAL 30 DAY) 
+        AND l.disbursement_date BETWEEN ? AND ? 
+        AND l.status = 'disbursed';
+      `, [office_id, effectiveStartDate, effectiveEndDate]);
+      
+      const totalDisbursed = totalDisbursedResult[0].total_disbursed || 0;
+      const defaultedInMonth1 = defaultedInMonth1Result[0].defaulted_in_month1 || 0;
+
+      finalScore = totalDisbursed > 0 ? ((defaultedInMonth1 / totalDisbursed) * 100).toFixed(2) : 0;
+
+      calculationDetails = {
+        manual_entry: false,
+        total_disbursed: totalDisbursed,
+        defaulted_in_month1: defaultedInMonth1,
+        default_rate: parseFloat(finalScore)
+      };
+    }
 
     // Validate score is percentage (should always be true since we calculated it)
     if (kpi.scoring !== 'percentage') {
@@ -88,13 +105,13 @@ router.post('/', async (req, res) => {
       // Update existing score
       await pool.query(
         'UPDATE smart_kpi_score SET score = ?, created_date = NOW() WHERE kpi_id = ? AND user_id = ?',
-        [defaultRate, kpi.id, user_id]
+        [finalScore, kpi.id, user_id]
       );
     } else {
       // Insert new score
       await pool.query(
         'INSERT INTO smart_kpi_score (kpi_id, user_id, score, created_date) VALUES (?, ?, ?, NOW())',
-        [kpi.id, user_id, defaultRate]
+        [kpi.id, user_id, finalScore]
       );
     }
 
@@ -104,18 +121,14 @@ router.post('/', async (req, res) => {
       data: {
         kpi_id: kpi.id,
         user_id,
-        score: parseFloat(defaultRate),
+        score: parseFloat(finalScore),
         kpi_name: kpi.name,
         weight: kpi.weight,
         period: {
           start_date: effectiveStartDate,
           end_date: effectiveEndDate
         },
-        calculation: {
-          total_disbursed: totalDisbursed,
-          defaulted_in_month1: defaultedInMonth1,
-          default_rate: parseFloat(defaultRate)
-        }
+        calculation: calculationDetails
       }
     });
 
