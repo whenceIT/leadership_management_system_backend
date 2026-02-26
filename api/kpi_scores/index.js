@@ -4,6 +4,9 @@
 const express = require('express');
 const router = express.Router();
 
+// Middleware to parse JSON request bodies
+router.use(express.json());
+
 // Import individual KPI score routers
 const kpiScoresRouter = require('./kpiScores');
 const monthlyDisbursementRouter = require('./branch/monthlyDisbursement');
