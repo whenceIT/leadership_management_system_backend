@@ -2,18 +2,11 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../../../db');
 
-// Middleware to parse JSON request bodies
-router.use(express.json());
-
-/**
- * @route POST /api/kpi-scores/month1-default-rate
- * @desc Record Month-1 Default Rate KPI score
- * @access Public
- */
 router.post('/', async (req, res) => {
   try {
     const { user_id, kpi_id, office_id, province_id, start_date, end_date, score } = req.body;
 
+    console.log('Received Month-1 Default Rate KPI score request:', req.body);
     // Validate required fields
     if (!user_id || !kpi_id || !office_id) {
       return res.status(400).json({
@@ -136,7 +129,7 @@ router.post('/', async (req, res) => {
     console.error('Error recording Month-1 Default Rate KPI score:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to record Month-1 Default Rate KPI score',
+      error: 'Failed to record Month-1 Default Rate KPI score. Try again',
       message: error.message
     });
   }
