@@ -56,7 +56,6 @@ router.post('/', async (req, res) => {
         FROM loans l
         WHERE l.office_id = ?
           AND l.disbursement_date BETWEEN ? AND ?
-          AND l.status = 'disbursed'
       `, [office_id, effectiveStartDate, effectiveEndDate]);      
       
       const [defaultedInMonth1Result] = await pool.query(`
@@ -64,7 +63,6 @@ router.post('/', async (req, res) => {
         WHERE l.office_id = ? 
         AND l.expected_first_repayment_date <= DATE_SUB(CURDATE(), INTERVAL 30 DAY) 
         AND l.disbursement_date BETWEEN ? AND ? 
-        AND l.status = 'disbursed';
       `, [office_id, effectiveStartDate, effectiveEndDate]);
       
       const totalDisbursed = totalDisbursedResult[0].total_disbursed || 0;
@@ -114,6 +112,7 @@ router.post('/', async (req, res) => {
       data: {
         kpi_id: kpi.id,
         user_id,
+        office_id,
         score: parseFloat(finalScore),
         kpi_name: kpi.name,
         weight: kpi.weight,

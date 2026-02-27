@@ -2,3 +2,4 @@ node_modules/
 # database-dictionary.md
 # smart-alerts-table.md
 db.js
+.claude
