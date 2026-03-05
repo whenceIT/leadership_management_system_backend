@@ -2115,7 +2115,6 @@ app.get('/product-risk-score/:office_id', async (req, res) => {
 
 
 //Month-1 Default Performance
-
 app.get('/month-1-default-performance/:office_id', async (req, res) => {
   try {
     const { office_id } = req.params;
@@ -2193,13 +2192,17 @@ app.get('/month-1-default-performance/:office_id', async (req, res) => {
       total_disbursed += Object.values(loanDisbursementMap).reduce((a,b) => a+b, 0);
 
       // Calculate month-1 defaulted amount
-      loans.forEach(l => {
-        const loanAgeInMonths = today.diff(dayjs(l.created_date), 'month');
-        if (!loanMonth1PaymentMap[l.id] && loanAgeInMonths >= 1) {
-          // Defaulted in month 1 → sum the disbursement
-          month_1_defaulted += loanDisbursementMap[l.id];
-        }
-      });
+     // Calculate month-1 defaulted amount
+loans
+  .filter(l => l.status === 'disbursed')
+  .forEach(l => {
+    const loanAgeInMonths = today.diff(dayjs(l.created_date), 'month');
+
+    if (!loanMonth1PaymentMap[l.id] && loanAgeInMonths >= 1) {
+      // Defaulted in month 1 → sum the disbursement
+      month_1_defaulted += loanDisbursementMap[l.id];
+    }
+  });
     }
 
     const month_1_default_rate = total_disbursed > 0 ? month_1_defaulted / total_disbursed : 0;
