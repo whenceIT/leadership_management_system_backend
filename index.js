@@ -2780,15 +2780,15 @@ const prev_end_date = dayjs().subtract(1, 'month').endOf('month').format('YYYY-M
 }
 
         // Repayments this month
-        if (
-          t.transaction_type === 'repayment' &&
-          t.date >= start_date &&
-          t.date <= end_date &&
-          ['part_payment', 'full_payment', 'reloan_payment']
-            .includes(t.payment_apply_to)
-        ) {
-          total_repayments += Number(t.credit) || 0;
-        }
+     if (
+  t.transaction_type?.toLowerCase().trim() === 'repayment' &&
+  new Date(t.date) >= new Date(start_date) &&
+  new Date(t.date) <= new Date(end_date) &&
+  ['part_payment', 'full_payment', 'reloan_payment']
+    .includes(t.payment_apply_to?.toLowerCase().trim())
+) {
+  total_repayments += Number(t.credit) || 0;
+}
 
       });
     }
