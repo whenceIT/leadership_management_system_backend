@@ -1324,6 +1324,8 @@ app.get('/portfolio-load-balance/:office_id', async (req, res) => {
 
     for (let loan of loans) {
 
+      console.log(loan.id + 'hey')
+
       // Get total repayments for this loan
       const [repayments] = await pool.query(`
         SELECT SUM(credit) as total_repaid
