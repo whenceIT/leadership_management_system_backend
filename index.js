@@ -2956,6 +2956,7 @@ app.get('/growth-trajectory/:office_id', async (req, res) => {
   try {
     const { office_id } = req.params;
 
+    // Current month
     const currentStart = new Date();
     currentStart.setDate(1);
     currentStart.setHours(0, 0, 0, 0);
@@ -2965,6 +2966,7 @@ app.get('/growth-trajectory/:office_id', async (req, res) => {
     currentEnd.setDate(0);
     currentEnd.setHours(23, 59, 59, 999);
 
+    // Previous month
     const previousStart = new Date(currentStart);
     previousStart.setMonth(previousStart.getMonth() - 1);
 
@@ -2972,26 +2974,26 @@ app.get('/growth-trajectory/:office_id', async (req, res) => {
     previousEnd.setDate(0);
     previousEnd.setHours(23, 59, 59, 999);
 
-    // Function to calculate revenue for a period
+    // Revenue calculation
     const calculateRevenue = async (startDate, endDate) => {
-      const [transactions] = await pool.query(`
+
+      const [transactions] = await pool.query(
+        `
         SELECT 
-          t.credit,
-          l.principal
+          t.credit
         FROM loan_transactions t
         JOIN loans l ON l.id = t.loan_id
         WHERE l.office_id = ?
         AND t.transaction_type IN ('part_payment','full_payment','reloan_payment')
         AND t.date BETWEEN ? AND ?
-      `, [office_id, startDate, endDate]);
+        `,
+        [office_id, startDate, endDate]
+      );
 
       let totalRevenue = 0;
 
       for (let tx of transactions) {
-        const interest = tx.credit - tx.principal;
-        if (interest > 0) {
-          totalRevenue += interest;
-        }
+        totalRevenue += Number(tx.credit) || 0;
       }
 
       return totalRevenue;
@@ -3001,17 +3003,18 @@ app.get('/growth-trajectory/:office_id', async (req, res) => {
     const previousRevenue = await calculateRevenue(previousStart, previousEnd);
 
     let momRevenue = 0;
+
     if (previousRevenue > 0) {
       momRevenue = (currentRevenue - previousRevenue) / previousRevenue;
     }
 
-    // Score = (MoM / 2.5%) × 100
+    // Score calculation
     let score = (momRevenue / 0.025) * 100;
 
     if (score > 100) score = 100;
     if (score < 0) score = 0;
 
-    const PP = score * 1; // 100%
+    const PP = score;
 
     res.json({
       office_id,
