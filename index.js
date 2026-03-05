@@ -1335,7 +1335,7 @@ app.get('/portfolio-load-balance/:office_id', async (req, res) => {
 
       const total_repaid = Number(repayments[0].total_repaid) || 0;
 
-      const outstanding = loan.principal_amount - total_repaid;
+      const outstanding = loan.principal - total_repaid;
 
       if (outstanding > 0) {
         total_outstanding += outstanding;
