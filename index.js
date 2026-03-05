@@ -2977,8 +2977,8 @@ app.get('/growth-trajectory/:office_id', async (req, res) => {
       const [transactions] = await pool.query(`
         SELECT 
           t.credit,
-          l.principal_amount
-        FROM transactions t
+          l.principal
+        FROM loan_transactions t
         JOIN loans l ON l.id = t.loan_id
         WHERE l.office_id = ?
         AND t.transaction_type IN ('part_payment','full_payment','reloan_payment')
@@ -2988,7 +2988,7 @@ app.get('/growth-trajectory/:office_id', async (req, res) => {
       let totalRevenue = 0;
 
       for (let tx of transactions) {
-        const interest = tx.credit - tx.principal_amount;
+        const interest = tx.credit - tx.principal;
         if (interest > 0) {
           totalRevenue += interest;
         }
