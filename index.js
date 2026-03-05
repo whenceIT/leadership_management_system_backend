@@ -2768,26 +2768,28 @@ const prev_end_date = dayjs().subtract(1, 'month').endOf('month').format('YYYY-M
         WHERE loan_id IN (?)
       `, [loanIds]);
 
-      transactions.forEach(t => {
+ transactions.forEach(t => {
+  const tDate = dayjs(t.date); // convert transaction date
 
-        // Total disbursed (all-time principal)
-        if (t.transaction_type === 'disbursement' && t.date >= prev_start_date &&
-          t.date <= prev_end_date) {
-          total_disbursed += Number(t.debit) || 0;
-        }
+  // Total disbursed (all-time principal)
+  if (
+    t.transaction_type === 'disbursement' &&
+    tDate.isSameOrAfter(dayjs(prev_start_date)) &&
+    tDate.isSameOrBefore(dayjs(prev_end_date))
+  ) {
+    total_disbursed += Number(t.debit) || 0;
+  }
 
-        // Repayments this month
-        if (
-          t.transaction_type === 'repayment' &&
-          t.date >= start_date &&
-          t.date <= end_date &&
-          ['part_payment', 'full_payment', 'reloan_payment']
-            .includes(t.payment_apply_to)
-        ) {
-          total_repayments += Number(t.credit) || 0;
-        }
-
-      });
+  // Repayments this month
+  if (
+    t.transaction_type === 'repayment' &&
+    tDate.isSameOrAfter(dayjs(start_date)) &&
+    tDate.isSameOrBefore(dayjs(end_date)) &&
+    ['part_payment', 'full_payment', 'reloan_payment'].includes(t.payment_apply_to)
+  ) {
+    total_repayments += Number(t.credit) || 0;
+  }
+});
     }
 
     // ===============================
