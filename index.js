@@ -2718,6 +2718,9 @@ app.get('/efficiency-ratio/:office_id', async (req, res) => {
     const start_date = dayjs().startOf('month').format('YYYY-MM-DD');
     const end_date = dayjs().endOf('month').format('YYYY-MM-DD');
 
+    const prev_start_date = dayjs().subtract(1, 'month').startOf('month').format('YYYY-MM-DD');
+const prev_end_date = dayjs().subtract(1, 'month').endOf('month').format('YYYY-MM-DD');
+
     // ===============================
     // 1️⃣ OPERATING COSTS
     // ===============================
@@ -2725,6 +2728,8 @@ app.get('/efficiency-ratio/:office_id', async (req, res) => {
       SELECT amount
       FROM expenses
       WHERE office_id = ?
+        AND date >= ?
+        AND date <= ?
     `, [office_id, start_date, end_date]);
 
     const operating_costs = expenses.reduce(
@@ -2766,13 +2771,16 @@ app.get('/efficiency-ratio/:office_id', async (req, res) => {
       transactions.forEach(t => {
 
         // Total disbursed (all-time principal)
-        if (t.transaction_type === 'disbursement') {
+        if (t.transaction_type === 'disbursement' && t.date >= prev_start_date &&
+          t.date <= prev_end_date) {
           total_disbursed += Number(t.debit) || 0;
         }
 
         // Repayments this month
         if (
           t.transaction_type === 'repayment' &&
+          t.date >= start_date &&
+          t.date <= end_date &&
           ['part_payment', 'full_payment', 'reloan_payment']
             .includes(t.payment_apply_to)
         ) {
