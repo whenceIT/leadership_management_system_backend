@@ -1725,14 +1725,15 @@ app.get('/collection-efficiency/:office_id', async (req, res) => {
       const end_date = cycleDate.add(1, 'month').subtract(1, 'day').format('YYYY-MM-DD');
 
       const [loans] = await pool.query(
-        `SELECT id,principal FROM loans WHERE loan_officer_id = ?`,
+        `SELECT id, principal FROM loans WHERE loan_officer_id = ?`,
         [user.id]
       );
 
-      for (let loan of loans){
+      for (let loan of loans) {
 
-        const outstanding = ((loan.principal * 0.4) + loan.principal);
-        console.log(outstanding)
+        const principal = Number(loan.principal) || 0;
+        const outstanding = (principal * 0.4) + principal;
+
         total_outstanding += outstanding;
       }
 
@@ -1766,19 +1767,19 @@ app.get('/collection-efficiency/:office_id', async (req, res) => {
 
       });
 
-
       branch_total_collections += total_collected;
     }
 
     // ===============================
     // APPLY FORMULA
     // ===============================
-    
 
-    const collections_rate = branch_total_collections/total_outstanding;
-    let score = (collections_rate / 0.7164) * 100;
+    const collections_rate = total_outstanding > 0
+      ? (branch_total_collections / total_outstanding) * 100
+      : 0;
 
-    // Cap at 100%
+    let score = (collections_rate / 71.64) * 100;
+
     if (score > 100) {
       score = 100;
     }
@@ -1791,7 +1792,7 @@ app.get('/collection-efficiency/:office_id', async (req, res) => {
       total_collections: branch_total_collections.toFixed(2),
       benchmark: "71.64%",
       weight: "30%",
-      outstanding: total_outstanding,
+      outstanding: total_outstanding.toFixed(2),
       percentage_point: percentage_point.toFixed(2)
     });
 
