@@ -1574,12 +1574,12 @@ app.get('/portfolio-quality/:office_id', async (req, res) => {
     const [loans] = await pool.query(`
       SELECT 
         l.id,
-        l.principal_amount,
-        l.due_date
+        l.principal,
+        l.first_repayment_date
       FROM loans l
       JOIN users u ON u.id = l.loan_officer_id
       WHERE u.office_id = ?
-      AND l.status = 'active'
+      AND l.status = 'disbursed'
     `, [office_id]);
 
     let total_outstanding = 0;
@@ -1601,7 +1601,7 @@ app.get('/portfolio-quality/:office_id', async (req, res) => {
 
       const total_repaid = Number(repayments[0].total_repaid) || 0;
 
-      const outstanding = loan.principal_amount - total_repaid;
+      const outstanding = loan.principal - total_repaid;
 
       if (outstanding > 0) {
         total_outstanding += outstanding;
@@ -1609,7 +1609,7 @@ app.get('/portfolio-quality/:office_id', async (req, res) => {
         // ===============================
         // 3️⃣ CHECK IF >30 DAYS OVERDUE
         // ===============================
-        const dueDate = new Date(loan.due_date);
+        const dueDate = new Date(loan.first_repayment_date);
         const diffTime = today - dueDate;
         const diffDays = diffTime / (1000 * 60 * 60 * 24);
 
