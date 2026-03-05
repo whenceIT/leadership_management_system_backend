@@ -5491,6 +5491,7 @@ app.get('/growth-trajectory/province/:province_id', async (req, res) => {
 // =======================================================
 async function getAllOffices(pool) {
   const [offices] = await pool.query(`SELECT id FROM offices`);
+  console.log(offices)
   return offices; // [{id}, ...]
 }
 
