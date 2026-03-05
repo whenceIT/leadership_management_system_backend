@@ -2413,7 +2413,7 @@ app.get('/roll-rate-control/:office_id', async (req, res) => {
     // ===============================
     for (let loan of loans) {
 
-      const dueDate = new Date(loan.due_date);
+      const dueDate = new Date(loan.first_repayment_date);
       const diffTime = today - dueDate;
       const diffDays = diffTime / (1000 * 60 * 60 * 24);
 
