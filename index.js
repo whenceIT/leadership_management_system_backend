@@ -2725,8 +2725,6 @@ app.get('/efficiency-ratio/:office_id', async (req, res) => {
       SELECT amount
       FROM expenses
       WHERE office_id = ?
-        AND date >= ?
-        AND date <= ?
     `, [office_id, start_date, end_date]);
 
     const operating_costs = expenses.reduce(
@@ -2768,16 +2766,13 @@ app.get('/efficiency-ratio/:office_id', async (req, res) => {
       transactions.forEach(t => {
 
         // Total disbursed (all-time principal)
-        if (t.transaction_type === 'disbursement' && t.date >= start_date &&
-          t.date <= end_date) {
+        if (t.transaction_type === 'disbursement') {
           total_disbursed += Number(t.debit) || 0;
         }
 
         // Repayments this month
         if (
           t.transaction_type === 'repayment' &&
-          t.date >= start_date &&
-          t.date <= end_date &&
           ['part_payment', 'full_payment', 'reloan_payment']
             .includes(t.payment_apply_to)
         ) {
