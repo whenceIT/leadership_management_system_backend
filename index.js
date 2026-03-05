@@ -1700,6 +1700,7 @@ app.get('/collection-efficiency/:office_id', async (req, res) => {
       });
     }
 
+    let total_outstanding = 0;
     let branch_total_collections = 0;
 
     for (const user of consultants) {
@@ -1727,6 +1728,12 @@ app.get('/collection-efficiency/:office_id', async (req, res) => {
         `SELECT id FROM loans WHERE loan_officer_id = ?`,
         [user.id]
       );
+
+      for (let loan of loans){
+
+        const outstanding = ((loan.principal * 0.4) + loan.principal);
+        total_outstanding += outstanding;
+      }
 
       if (!loans.length) continue;
 
@@ -1758,14 +1765,17 @@ app.get('/collection-efficiency/:office_id', async (req, res) => {
 
       });
 
+
       branch_total_collections += total_collected;
     }
 
     // ===============================
     // APPLY FORMULA
     // ===============================
+    
 
-    let score = (branch_total_collections / 0.7164) * 100;
+    const collections_rate = branch_total_collections/total_outstanding;
+    let score = (collections_rate / 0.7164) * 100;
 
     // Cap at 100%
     if (score > 100) {
