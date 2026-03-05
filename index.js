@@ -2511,7 +2511,7 @@ app.get('/long-term-delinquency-risk/:office_id', async (req, res) => {
     for (const user of consultants) {
 
       const [loans] = await pool.query(
-        `SELECT id, created_date FROM loans WHERE loan_officer_id = ?`,
+        `SELECT id, created_date FROM loans WHERE loan_officer_id = ? `,
         [user.id]
       );
 
@@ -2768,7 +2768,8 @@ app.get('/efficiency-ratio/:office_id', async (req, res) => {
       transactions.forEach(t => {
 
         // Total disbursed (all-time principal)
-        if (t.transaction_type === 'disbursement') {
+        if (t.transaction_type === 'disbursement' && t.date >= start_date &&
+          t.date <= end_date) {
           total_disbursed += Number(t.debit) || 0;
         }
 
