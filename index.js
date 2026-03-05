@@ -3022,7 +3022,10 @@ app.get('/growth-trajectory/:office_id', async (req, res) => {
       previous_month_revenue: previousRevenue,
       mom_revenue: momRevenue,
       score,
-      PP
+      PP,
+      currentStart,
+      currentEnd
+      
     });
 
   } catch (error) {
