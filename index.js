@@ -1725,7 +1725,7 @@ app.get('/collection-efficiency/:office_id', async (req, res) => {
       const end_date = cycleDate.add(1, 'month').subtract(1, 'day').format('YYYY-MM-DD');
 
       const [loans] = await pool.query(
-        `SELECT id FROM loans WHERE loan_officer_id = ?`,
+        `SELECT id,principal FROM loans WHERE loan_officer_id = ?`,
         [user.id]
       );
 
