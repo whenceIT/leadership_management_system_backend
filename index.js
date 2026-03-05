@@ -1732,6 +1732,7 @@ app.get('/collection-efficiency/:office_id', async (req, res) => {
       for (let loan of loans){
 
         const outstanding = ((loan.principal * 0.4) + loan.principal);
+        console.log(outstanding)
         total_outstanding += outstanding;
       }
 
@@ -1790,6 +1791,7 @@ app.get('/collection-efficiency/:office_id', async (req, res) => {
       total_collections: branch_total_collections.toFixed(2),
       benchmark: "71.64%",
       weight: "30%",
+      outstanding: total_outstanding,
       percentage_point: percentage_point.toFixed(2)
     });
 
