@@ -2387,7 +2387,6 @@ app.get('/roll-rate-control/:office_id', async (req, res) => {
       FROM loans l
       JOIN users u ON u.id = l.loan_officer_id
       WHERE u.office_id = ?
-      AND l.status = 'disbursed'
     `, [office_id]);
 
     const total_loans = loans.length;
