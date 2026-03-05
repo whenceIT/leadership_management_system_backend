@@ -1109,6 +1109,58 @@ app.get("/staff-adequacy/:id", async (req, res) => {
   }
 });
 
+//PROVINCE
+
+// Staff Adequacy - Province Average
+app.get("/staff-adequacy/province/:province_id", async (req, res) => {
+  try {
+    const { province_id } = req.params;
+
+    const [rows] = await pool.query(`
+      SELECT 
+        o.id AS office_id,
+        COUNT(DISTINCT u.id) AS total_lcs
+      FROM offices o
+      LEFT JOIN users u ON u.office_id = o.id
+      LEFT JOIN role_users ur ON ur.user_id = u.id AND ur.role_id = 3
+      WHERE o.province_id = ?
+      GROUP BY o.id
+    `, [province_id]);
+
+    let officeScores = [];
+
+    rows.forEach(row => {
+      const ActualLCs = row.total_lcs;
+
+      let normalized_score = (ActualLCs / 10) * 100;
+
+      if (normalized_score > 100) {
+        normalized_score = 100;
+      }
+
+      officeScores.push(normalized_score);
+    });
+
+    const province_average =
+      officeScores.reduce((sum, score) => sum + score, 0) /
+      (officeScores.length || 1);
+
+    const PercentagePoint = province_average * 0.25;
+
+    res.json({
+      province_id,
+      offices_count: officeScores.length,
+      average_normalized_score: province_average,
+      weight: "25%",
+      percentage_point: PercentagePoint
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 
 app.get('/productivity-achievement/:office_id', async (req, res) => {
   try {
@@ -1250,6 +1302,174 @@ app.get('/productivity-achievement/:office_id', async (req, res) => {
   }
 });
 
+//province
+
+app.get('/productivity-achievement/province/:province_id', async (req, res) => {
+  try {
+
+    const { province_id } = req.params;
+
+    if (!province_id) {
+      return res.status(400).json({ message: "province_id is required" });
+    }
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        average_normalized_score: 0,
+        percentage_point: 0
+      });
+    }
+
+    let province_scores = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+
+    for (const office of offices) {
+
+      const office_id = office.id;
+
+      const [consultants] = await pool.query(`
+        SELECT 
+          u.id,
+          cd.cycle_end_date
+        FROM users u
+        JOIN role_users ru ON ru.user_id = u.id
+        LEFT JOIN cycle_dates cd ON cd.loan_officer_id = u.id
+        WHERE ru.role_id = 3
+          AND u.office_id = ?
+      `, [office_id]);
+
+      if (!consultants.length) continue;
+
+      let branch_total_given_out = 0;
+      let consultant_count = 0;
+
+      for (const user of consultants) {
+
+        const cycleEndDay = user.cycle_end_date
+          ? parseInt(user.cycle_end_date)
+          : 24;
+
+        const today = dayjs();
+
+        let currentMonth = dayjs().startOf('month');
+        let cycleDay = Math.min(cycleEndDay, currentMonth.daysInMonth());
+        let cycleDate = currentMonth.date(cycleDay).add(1, 'day');
+
+        if (today.isBefore(cycleDate)) {
+          let prevMonth = dayjs().subtract(1, 'month').startOf('month');
+          cycleDay = Math.min(cycleEndDay, prevMonth.daysInMonth());
+          cycleDate = prevMonth.date(cycleDay).add(1, 'day');
+        }
+
+        const start_date = cycleDate.format('YYYY-MM-DD');
+        const end_date = cycleDate.add(1, 'month').subtract(1, 'day').format('YYYY-MM-DD');
+
+        const [loans] = await pool.query(
+          `SELECT id FROM loans WHERE loan_officer_id = ?`,
+          [user.id]
+        );
+
+        if (!loans.length) continue;
+
+        const loanIds = loans.map(l => l.id);
+
+        const [transactions] = await pool.query(`
+          SELECT debit, credit, transaction_type, payment_apply_to, balance_bf
+          FROM loan_transactions
+          WHERE loan_id IN (?)
+            AND date >= ?
+            AND date <= ?
+        `, [loanIds, start_date, end_date]);
+
+        let given_out = 0;
+
+        transactions.forEach(t => {
+
+          if (t.transaction_type === 'disbursement') {
+            given_out += Number(t.debit) || 0;
+          }
+
+          if (
+            t.transaction_type === 'repayment' &&
+            t.payment_apply_to === 'reloan_payment'
+          ) {
+            const reloan_amount =
+              (Number(t.balance_bf) || 0) -
+              (Number(t.credit) || 0);
+
+            given_out += reloan_amount;
+          }
+
+        });
+
+        const [carryOver] = await pool.query(`
+          SELECT amount
+          FROM carry_overs
+          WHERE user_id = ?
+            AND cycle_date = ?
+            AND status = 'active'
+        `, [user.id, start_date]);
+
+        const carryOverAmount = carryOver.length
+          ? Number(carryOver[0].amount)
+          : 0;
+
+        given_out += carryOverAmount;
+
+        branch_total_given_out += given_out;
+        consultant_count++;
+
+      }
+
+      const average =
+        consultant_count > 0
+          ? branch_total_given_out / consultant_count
+          : 0;
+
+      const normalized_score = (average / 40000) * 100;
+
+      province_scores.push(normalized_score);
+
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE
+    // ===============================
+
+    const province_average =
+      province_scores.reduce((sum, score) => sum + score, 0) /
+      (province_scores.length || 1);
+
+    const percentage_point = province_average * 0.30;
+
+    res.json({
+      province_id,
+      offices_count: province_scores.length,
+      average_normalized_score: province_average.toFixed(2),
+      weight: "30%",
+      percentage_point: percentage_point.toFixed(2)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
 
 app.get("/vacancy-impact/:office_id", async (req, res) => {
   try {
@@ -1287,6 +1507,91 @@ app.get("/vacancy-impact/:office_id", async (req, res) => {
       authorized_positions: AuthorizedPositions,
       vacancies: adjustedVacancies,
       normalized_score: NormalizedScore,
+      weight: "20%",
+      percentage_point: PercentagePoint
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+//province
+
+app.get("/vacancy-impact/province/:province_id", async (req, res) => {
+  try {
+    const { province_id } = req.params;
+
+    const AuthorizedPositions = 10;
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        average_normalized_score: 0,
+        percentage_point: 0
+      });
+    }
+
+    let province_scores = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+
+    for (const office of offices) {
+
+      const office_id = office.id;
+
+      const [rows] = await pool.query(`
+        SELECT COUNT(DISTINCT u.id) AS total
+        FROM users u
+        INNER JOIN role_users ur ON ur.user_id = u.id
+        WHERE ur.role_id = 3
+        AND u.office_id = ?
+      `, [office_id]);
+
+      const ActualLCs = rows[0].total;
+
+      const Vacancies = AuthorizedPositions - ActualLCs;
+
+      const adjustedVacancies = Vacancies < 0 ? 0 : Vacancies;
+
+      let NormalizedScore = 1 - (adjustedVacancies / AuthorizedPositions);
+
+      if (NormalizedScore < 0) NormalizedScore = 0;
+      if (NormalizedScore > 1) NormalizedScore = 1;
+
+      province_scores.push(NormalizedScore);
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE
+    // ===============================
+
+    const province_average =
+      province_scores.reduce((sum, score) => sum + score, 0) /
+      (province_scores.length || 1);
+
+    const PercentagePoint = province_average * 0.20;
+
+    res.json({
+      province_id,
+      offices_count: province_scores.length,
+      authorized_positions_per_office: AuthorizedPositions,
+      average_normalized_score: province_average,
       weight: "20%",
       percentage_point: PercentagePoint
     });
@@ -1407,6 +1712,136 @@ app.get('/portfolio-load-balance/:office_id', async (req, res) => {
       total_lcs,
       portfolio_per_lc: portfolio_per_lc.toFixed(2),
       score: score.toFixed(2) + "%",
+      weight: "25%",
+      percentage_point: percentage_point.toFixed(2)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
+
+//PROVINCE
+app.get('/portfolio-load-balance/province/:province_id', async (req, res) => {
+  try {
+    const { province_id } = req.params;
+
+    if (!province_id) {
+      return res.status(400).json({ message: "province_id is required" });
+    }
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        average_score: 0,
+        percentage_point: 0
+      });
+    }
+
+    let province_scores = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+    for (const office of offices) {
+
+      const office_id = office.id;
+
+      // 1️⃣ GET ACTIVE LOANS
+      const [loans] = await pool.query(`
+        SELECT 
+          l.id,
+          l.principal
+        FROM loans l
+        JOIN users u ON u.id = l.loan_officer_id
+        WHERE u.office_id = ?
+        AND l.status = 'disbursed'
+      `, [office_id]);
+
+      let total_outstanding = 0;
+
+      for (let loan of loans) {
+
+        const [repayments] = await pool.query(`
+          SELECT SUM(credit) as total_repaid
+          FROM loan_transactions
+          WHERE loan_id = ?
+          AND transaction_type = 'repayment'
+          AND payment_apply_to IN ('part_payment','full_payment','reloan_payment')
+        `, [loan.id]);
+
+        const total_repaid = Number(repayments[0].total_repaid) || 0;
+
+        const outstanding = loan.principal - total_repaid;
+
+        if (outstanding > 0) {
+          total_outstanding += outstanding;
+        }
+      }
+
+      // 2️⃣ GET LOAN CONSULTANTS
+      const [consultants] = await pool.query(`
+        SELECT u.id
+        FROM users u
+        JOIN role_users ru ON ru.user_id = u.id
+        WHERE ru.role_id = 3
+        AND u.office_id = ?
+      `, [office_id]);
+
+      const total_lcs = consultants.length;
+
+      if (total_lcs === 0) continue;
+
+      // 3️⃣ PORTFOLIO PER LC
+      const portfolio_per_lc = total_outstanding / total_lcs;
+
+      // 4️⃣ SCORE CALCULATION
+      const lowerBound = 70000;
+      const upperBound = 110000;
+
+      let score = 100;
+
+      if (portfolio_per_lc < lowerBound) {
+        const deviationPercent =
+          Math.abs(portfolio_per_lc - lowerBound) / lowerBound;
+        score = 100 - (deviationPercent * 50);
+      }
+
+      if (portfolio_per_lc > upperBound) {
+        const deviationPercent =
+          Math.abs(portfolio_per_lc - upperBound) / upperBound;
+        score = 100 - (deviationPercent * 50);
+      }
+
+      if (score < 0) score = 0;
+
+      province_scores.push(score);
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE
+    // ===============================
+    const province_average =
+      province_scores.reduce((sum, score) => sum + score, 0) /
+      (province_scores.length || 1);
+
+    const percentage_point = province_average * 0.25;
+
+    res.json({
+      province_id,
+      offices_count: province_scores.length,
+      average_score: province_average.toFixed(2) + "%",
       weight: "25%",
       percentage_point: percentage_point.toFixed(2)
     });
@@ -1558,6 +1993,170 @@ app.get('/volume-achievement/:office_id', async (req, res) => {
 });
 
 
+//Province
+app.get('/volume-achievement/province/:province_id', async (req, res) => {
+  try {
+
+    const { province_id } = req.params;
+
+    if (!province_id) {
+      return res.status(400).json({ message: "province_id is required" });
+    }
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        average_normalized_score: 0,
+        percentage_point: 0
+      });
+    }
+
+    let province_scores = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+    for (const office of offices) {
+
+      const office_id = office.id;
+
+      // ===============================
+      // GET CONSULTANTS
+      // ===============================
+      const [consultants] = await pool.query(`
+        SELECT 
+          u.id,
+          cd.cycle_end_date
+        FROM users u
+        JOIN role_users ru ON ru.user_id = u.id
+        LEFT JOIN cycle_dates cd ON cd.loan_officer_id = u.id
+        WHERE ru.role_id = 3
+          AND u.office_id = ?
+      `, [office_id]);
+
+      if (!consultants.length) continue;
+
+      let branch_total_given_out = 0;
+      let consultant_count = 0;
+
+      for (const user of consultants) {
+
+        const cycleEndDay = user.cycle_end_date
+          ? parseInt(user.cycle_end_date)
+          : 24;
+
+        const today = dayjs();
+
+        let currentMonth = dayjs().startOf('month');
+        let cycleDay = Math.min(cycleEndDay, currentMonth.daysInMonth());
+        let cycleDate = currentMonth.date(cycleDay).add(1, 'day');
+
+        if (today.isBefore(cycleDate)) {
+          let prevMonth = dayjs().subtract(1, 'month').startOf('month');
+          cycleDay = Math.min(cycleEndDay, prevMonth.daysInMonth());
+          cycleDate = prevMonth.date(cycleDay).add(1, 'day');
+        }
+
+        const start_date = cycleDate.format('YYYY-MM-DD');
+        const end_date = cycleDate.add(1, 'month').subtract(1, 'day').format('YYYY-MM-DD');
+
+        const [loans] = await pool.query(
+          `SELECT id FROM loans WHERE loan_officer_id = ?`,
+          [user.id]
+        );
+
+        if (!loans.length) continue;
+
+        const loanIds = loans.map(l => l.id);
+
+        const [transactions] = await pool.query(`
+          SELECT debit, credit, transaction_type, payment_apply_to, balance_bf
+          FROM loan_transactions
+          WHERE loan_id IN (?)
+            AND date >= ?
+            AND date <= ?
+        `, [loanIds, start_date, end_date]);
+
+        let given_out = 0;
+
+        transactions.forEach(t => {
+
+          if (t.transaction_type === 'disbursement') {
+            given_out += Number(t.debit) || 0;
+          }
+
+          if (
+            t.transaction_type === 'repayment' &&
+            t.payment_apply_to === 'reloan_payment'
+          ) {
+            const reloan_amount =
+              (Number(t.balance_bf) || 0) -
+              (Number(t.credit) || 0);
+
+            given_out += reloan_amount;
+          }
+
+        });
+
+        const [carryOver] = await pool.query(`
+          SELECT amount
+          FROM carry_overs
+          WHERE user_id = ?
+            AND cycle_date = ?
+            AND status = 'active'
+        `, [user.id, start_date]);
+
+        const carryOverAmount = carryOver.length
+          ? Number(carryOver[0].amount)
+          : 0;
+
+        given_out += carryOverAmount;
+
+        branch_total_given_out += given_out;
+        consultant_count++;
+      }
+
+      const normalized_score = (branch_total_given_out / 420000) * 100;
+
+      province_scores.push(normalized_score);
+
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE
+    // ===============================
+    const province_average =
+      province_scores.reduce((sum, score) => sum + score, 0) /
+      (province_scores.length || 1);
+
+    const percentage_point = province_average * 0.25;
+
+    res.json({
+      province_id,
+      offices_count: province_scores.length,
+      branch_target: "420000",
+      average_normalized_score: province_average.toFixed(2),
+      weight: "25%",
+      percentage_point: percentage_point.toFixed(2)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
+
+
 //porfolio quality
 
 app.get('/portfolio-quality/:office_id', async (req, res) => {
@@ -1657,6 +2256,135 @@ app.get('/portfolio-quality/:office_id', async (req, res) => {
       overdue_outstanding: overdue_outstanding.toFixed(2),
       PAR: (PAR * 100).toFixed(2) + "%",
       score: score.toFixed(2) + "%",
+      weight: "35%",
+      percentage_point: percentage_point.toFixed(2)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
+
+
+//province
+app.get('/portfolio-quality/province/:province_id', async (req, res) => {
+  try {
+
+    const { province_id } = req.params;
+
+    if (!province_id) {
+      return res.status(400).json({ message: "province_id is required" });
+    }
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        average_score: 0,
+        percentage_point: 0
+      });
+    }
+
+    let province_scores = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+    for (const office of offices) {
+
+      const office_id = office.id;
+
+      // 1️⃣ GET ACTIVE LOANS
+      const [loans] = await pool.query(`
+        SELECT 
+          l.id,
+          l.principal,
+          l.first_repayment_date
+        FROM loans l
+        JOIN users u ON u.id = l.loan_officer_id
+        WHERE u.office_id = ?
+        AND l.status = 'disbursed'
+      `, [office_id]);
+
+      let total_outstanding = 0;
+      let overdue_outstanding = 0;
+
+      const today = new Date();
+
+      for (let loan of loans) {
+
+        // 2️⃣ GET TOTAL REPAYMENTS
+        const [repayments] = await pool.query(`
+          SELECT SUM(credit) as total_repaid
+          FROM loan_transactions
+          WHERE loan_id = ?
+          AND payment_apply_to IN ('part_payment','full_payment','reloan_payment')
+        `, [loan.id]);
+
+        const total_repaid = Number(repayments[0].total_repaid) || 0;
+
+        const outstanding = loan.principal - total_repaid;
+
+        if (outstanding > 0) {
+
+          total_outstanding += outstanding;
+
+          // 3️⃣ CHECK IF >30 DAYS OVERDUE
+          const dueDate = new Date(loan.first_repayment_date);
+          const diffTime = today - dueDate;
+          const diffDays = diffTime / (1000 * 60 * 60 * 24);
+
+          if (diffDays > 30) {
+            overdue_outstanding += outstanding;
+          }
+        }
+      }
+
+      if (total_outstanding === 0) {
+        province_scores.push(100);
+        continue;
+      }
+
+      // 4️⃣ PAR CALCULATION
+      const PAR = overdue_outstanding / total_outstanding;
+
+      // 5️⃣ SCORE CALCULATION
+      let score = 100;
+
+      if (PAR > 0.08) {
+        const excess = PAR - 0.08;
+        score = 100 - (excess * 5 * 100);
+      }
+
+      if (score < 0) score = 0;
+
+      province_scores.push(score);
+
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE
+    // ===============================
+    const province_average =
+      province_scores.reduce((sum, score) => sum + score, 0) /
+      (province_scores.length || 1);
+
+    const percentage_point = province_average * 0.35;
+
+    res.json({
+      province_id,
+      offices_count: province_scores.length,
+      average_score: province_average.toFixed(2) + "%",
       weight: "35%",
       percentage_point: percentage_point.toFixed(2)
     });
@@ -1803,6 +2531,169 @@ app.get('/collection-efficiency/:office_id', async (req, res) => {
 });
 
 
+//province
+
+app.get('/collection-efficiency/province/:province_id', async (req, res) => {
+  try {
+
+    const { province_id } = req.params;
+
+    if (!province_id) {
+      return res.status(400).json({ message: "province_id is required" });
+    }
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        benchmark: "71.64%",
+        weight: "30%",
+        average_score: 0,
+        percentage_point: 0
+      });
+    }
+
+    const BENCHMARK = 71.64;
+
+    let province_scores = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+    for (const office of offices) {
+
+      const office_id = office.id;
+
+      const [consultants] = await pool.query(`
+        SELECT 
+          u.id,
+          cd.cycle_end_date
+        FROM users u
+        JOIN role_users ru ON ru.user_id = u.id
+        LEFT JOIN cycle_dates cd ON cd.loan_officer_id = u.id
+        WHERE ru.role_id = 3
+          AND u.office_id = ?
+      `, [office_id]);
+
+      if (!consultants.length) continue;
+
+      let total_outstanding = 0;
+      let branch_total_collections = 0;
+
+      for (const user of consultants) {
+
+        const cycleEndDay = user.cycle_end_date
+          ? parseInt(user.cycle_end_date)
+          : 24;
+
+        const today = dayjs();
+
+        let currentMonth = dayjs().startOf('month');
+        let cycleDay = Math.min(cycleEndDay, currentMonth.daysInMonth());
+        let cycleDate = currentMonth.date(cycleDay).add(1, 'day');
+
+        if (today.isBefore(cycleDate)) {
+          let prevMonth = dayjs().subtract(1, 'month').startOf('month');
+          cycleDay = Math.min(cycleEndDay, prevMonth.daysInMonth());
+          cycleDate = prevMonth.date(cycleDay).add(1, 'day');
+        }
+
+        const start_date = cycleDate.format('YYYY-MM-DD');
+        const end_date = cycleDate.add(1, 'month').subtract(1, 'day').format('YYYY-MM-DD');
+
+        const [loans] = await pool.query(
+          `SELECT id, principal FROM loans WHERE loan_officer_id = ?`,
+          [user.id]
+        );
+
+        for (let loan of loans) {
+          const principal = Number(loan.principal) || 0;
+          const outstanding = (principal * 0.4) + principal; // your formula
+          total_outstanding += outstanding;
+        }
+
+        if (!loans.length) continue;
+
+        const loanIds = loans.map(l => l.id);
+
+        const [transactions] = await pool.query(`
+          SELECT credit, transaction_type, payment_apply_to, balance_bf
+          FROM loan_transactions
+          WHERE loan_id IN (?)
+            AND date >= ?
+            AND date <= ?
+        `, [loanIds, start_date, end_date]);
+
+        let total_collected = 0;
+
+        transactions.forEach(t => {
+
+          if (t.transaction_type === 'repayment') {
+
+            if (t.payment_apply_to === 'reloan_payment') {
+              total_collected += Number(t.balance_bf) || 0;
+            }
+
+            if (['full_payment', 'part_payment'].includes(t.payment_apply_to)) {
+              total_collected += Number(t.credit) || 0;
+            }
+
+          }
+
+        });
+
+        branch_total_collections += total_collected;
+      }
+
+      // ===============================
+      // APPLY FORMULA PER OFFICE
+      // ===============================
+      const collections_rate = total_outstanding > 0
+        ? (branch_total_collections / total_outstanding) * 100
+        : 0;
+
+      let score = (collections_rate / BENCHMARK) * 100;
+
+      if (score > 100) score = 100;
+      if (score < 0) score = 0;
+
+      province_scores.push(score);
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE
+    // ===============================
+    const province_average =
+      province_scores.reduce((sum, score) => sum + score, 0) /
+      (province_scores.length || 1);
+
+    const percentage_point = province_average * 0.30;
+
+    return res.json({
+      province_id,
+      offices_count: province_scores.length,
+      benchmark: "71.64%",
+      weight: "30%",
+      average_score: province_average.toFixed(2),
+      percentage_point: percentage_point.toFixed(2)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
+
+
 
 // LOAN PRODUCTS & INTEREST RATES INDEX (LPIRI)
 
@@ -1935,6 +2826,166 @@ app.get('/yield-achievement/:office_id', async (req, res) => {
   }
 });
 
+
+//province
+
+app.get('/yield-achievement/province/:province_id', async (req, res) => {
+  try {
+
+    const { province_id } = req.params;
+
+    if (!province_id) {
+      return res.status(400).json({ message: "province_id is required" });
+    }
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        target: "38.2%",
+        weight: "35%",
+        average_score: 0,
+        percentage_point: 0
+      });
+    }
+
+    const TARGET = 0.382;
+
+    let province_scores = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+    for (const office of offices) {
+
+      const office_id = office.id;
+
+      const [consultants] = await pool.query(`
+        SELECT 
+          u.id,
+          cd.cycle_end_date
+        FROM users u
+        JOIN role_users ru ON ru.user_id = u.id
+        LEFT JOIN cycle_dates cd ON cd.loan_officer_id = u.id
+        WHERE ru.role_id = 3
+          AND u.office_id = ?
+      `, [office_id]);
+
+      if (!consultants.length) continue;
+
+      let total_principal_disbursed = 0;
+      let total_collected = 0;
+
+      for (const user of consultants) {
+
+        const cycleEndDay = user.cycle_end_date
+          ? parseInt(user.cycle_end_date)
+          : 24;
+
+        const today = dayjs();
+
+        let currentMonth = dayjs().startOf('month');
+        let cycleDay = Math.min(cycleEndDay, currentMonth.daysInMonth());
+        let cycleDate = currentMonth.date(cycleDay).add(1, 'day');
+
+        if (today.isBefore(cycleDate)) {
+          let prevMonth = dayjs().subtract(1, 'month').startOf('month');
+          cycleDay = Math.min(cycleEndDay, prevMonth.daysInMonth());
+          cycleDate = prevMonth.date(cycleDay).add(1, 'day');
+        }
+
+        const start_date = cycleDate.format('YYYY-MM-DD');
+        const end_date = cycleDate.add(1, 'month').subtract(1, 'day').format('YYYY-MM-DD');
+
+        const [loans] = await pool.query(
+          `SELECT id FROM loans WHERE loan_officer_id = ?`,
+          [user.id]
+        );
+
+        if (!loans.length) continue;
+
+        const loanIds = loans.map(l => l.id);
+
+        const [transactions] = await pool.query(`
+          SELECT debit, credit, transaction_type, payment_apply_to
+          FROM loan_transactions
+          WHERE loan_id IN (?)
+            AND date >= ?
+            AND date <= ?
+        `, [loanIds, start_date, end_date]);
+
+        transactions.forEach(t => {
+
+          // Principal Disbursed
+          if (t.transaction_type === 'disbursement') {
+            total_principal_disbursed += Number(t.debit) || 0;
+          }
+
+          // Collections (repayments)
+          if (
+            t.transaction_type === 'repayment' &&
+            ['full_payment', 'part_payment', 'reloan_payment'].includes(t.payment_apply_to)
+          ) {
+            total_collected += Number(t.credit) || 0;
+          }
+
+        });
+
+      }
+
+      // ===============================
+      // CALCULATE INTEREST
+      // ===============================
+      const total_interest_earned =
+        total_collected - total_principal_disbursed;
+
+      const effective_interest_rate =
+        total_principal_disbursed > 0
+          ? total_interest_earned / total_principal_disbursed
+          : 0;
+
+      // ===============================
+      // APPLY TARGET FORMULA (PER OFFICE)
+      // ===============================
+      const score = TARGET > 0 ? (effective_interest_rate / TARGET) * 100 : 0; // percent score
+      const capped_score = score > 100 ? 100 : (score < 0 ? 0 : score);
+
+      province_scores.push(capped_score);
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE
+    // ===============================
+    const province_average =
+      province_scores.reduce((sum, s) => sum + s, 0) /
+      (province_scores.length || 1);
+
+    const percentage_point = province_average * 0.35;
+
+    return res.json({
+      province_id,
+      offices_count: province_scores.length,
+      target: "38.2%",
+      weight: "35%",
+      average_score: province_average.toFixed(2) + "%",
+      percentage_point: percentage_point.toFixed(2)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
+
 //Product Diversification
 app.get('/product-diversification/:office_id', async (req, res) => {
   try {
@@ -2005,6 +3056,98 @@ app.get('/product-diversification/:office_id', async (req, res) => {
   }
 });
 
+//province
+
+app.get('/product-diversification/province/:province_id', async (req, res) => {
+  try {
+
+    const { province_id } = req.params;
+
+    if (!province_id) {
+      return res.status(400).json({ message: "province_id is required" });
+    }
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        average_HHI: 0,
+        weight: "25%",
+        percentage_point: 0
+      });
+    }
+
+    let province_hhis = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+    for (const office of offices) {
+
+      const office_id = office.id;
+
+      // ===============================
+      // GET CLIENTS IN OFFICE
+      // ===============================
+      const [clients] = await pool.query(`
+        SELECT working_place
+        FROM clients
+        WHERE office_id = ?
+      `, [office_id]);
+
+      const total_clients = clients.length;
+
+      if (total_clients === 0) continue;
+
+      const workingPlaceCounts = {};
+
+      clients.forEach(client => {
+        const place = client.working_place || 'Unknown';
+        workingPlaceCounts[place] = (workingPlaceCounts[place] || 0) + 1;
+      });
+
+      // HHI = sum of (share)^2
+      let hhi = 0;
+
+      Object.values(workingPlaceCounts).forEach(count => {
+        const share = count / total_clients;
+        hhi += share * share;
+      });
+
+      province_hhis.push(hhi);
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE HHI
+    // ===============================
+    const avg_hhi =
+      province_hhis.reduce((sum, h) => sum + h, 0) /
+      (province_hhis.length || 1);
+
+    const percentage_point = avg_hhi * 0.25;
+
+    return res.json({
+      province_id,
+      offices_count: province_hhis.length,
+      average_HHI: avg_hhi.toFixed(4),
+      weight: "25%",
+      percentage_point: percentage_point.toFixed(4)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
 
 // Product Risk Score
 app.get('/product-risk-score/:office_id', async (req, res) => {
@@ -2105,6 +3248,146 @@ app.get('/product-risk-score/:office_id', async (req, res) => {
       defaulted_rate: (defaulted_rate*100).toFixed(2) + "%",
       weight: "30%",
       percentage_point: percentage_point.toFixed(2)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
+
+
+//province
+app.get('/product-risk-score/province/:province_id', async (req, res) => {
+  try {
+    const { province_id } = req.params;
+
+    if (!province_id) {
+      return res.status(400).json({ message: "province_id is required" });
+    }
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        average_score: 0,
+        weight: "30%",
+        percentage_point: 0
+      });
+    }
+
+    const TARGET_DEFAULT_RATE = 0.2836; // your benchmark
+    const today = dayjs();
+
+    let province_scores = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+    for (const office of offices) {
+
+      const office_id = office.id;
+
+      const [consultants] = await pool.query(`
+        SELECT u.id
+        FROM users u
+        JOIN role_users ru ON ru.user_id = u.id
+        WHERE ru.role_id = 3
+          AND u.office_id = ?
+      `, [office_id]);
+
+      if (!consultants.length) continue;
+
+      let total_disbursed = 0;
+      let total_defaulted = 0;
+
+      for (const user of consultants) {
+
+        const [loans] = await pool.query(
+          `SELECT id, created_date FROM loans WHERE loan_officer_id = ?`,
+          [user.id]
+        );
+
+        if (!loans.length) continue;
+
+        const loanIds = loans.map(l => l.id);
+
+        const [transactions] = await pool.query(`
+          SELECT loan_id, debit, credit, transaction_type, payment_apply_to
+          FROM loan_transactions
+          WHERE loan_id IN (?)
+        `, [loanIds]);
+
+        // Map loan_id -> has_full_payment
+        const loanPaymentsMap = {};
+        const loanDisbursementMap = {};
+
+        loans.forEach(l => {
+          loanPaymentsMap[l.id] = false;
+          loanDisbursementMap[l.id] = 0;
+        });
+
+        transactions.forEach(t => {
+          if (t.transaction_type === 'disbursement') {
+            loanDisbursementMap[t.loan_id] += Number(t.debit) || 0;
+          }
+          if (
+            t.transaction_type === 'repayment' &&
+            t.payment_apply_to === 'full_payment'
+          ) {
+            loanPaymentsMap[t.loan_id] = true;
+          }
+        });
+
+        // Sum total disbursed
+        total_disbursed += Object.values(loanDisbursementMap).reduce((a, b) => a + b, 0);
+
+        // Identify defaulted loans (no full payment, >1 month old)
+        loans.forEach(l => {
+          const loanDate = dayjs(l.created_date);
+          if (!loanPaymentsMap[l.id] && today.diff(loanDate, 'month') > 0) {
+            total_defaulted += loanDisbursementMap[l.id];
+          }
+        });
+
+      }
+
+      const defaulted_rate = total_disbursed > 0
+        ? total_defaulted / total_disbursed
+        : 0;
+
+      // same as your logic
+      const score_ratio = TARGET_DEFAULT_RATE > 0
+        ? (defaulted_rate / TARGET_DEFAULT_RATE)
+        : 0;
+
+      province_scores.push(score_ratio);
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE
+    // ===============================
+    const avg_score_ratio =
+      province_scores.reduce((sum, s) => sum + s, 0) /
+      (province_scores.length || 1);
+
+    const percentage_point = avg_score_ratio * 0.30;
+
+    return res.json({
+      province_id,
+      offices_count: province_scores.length,
+      average_score: avg_score_ratio.toFixed(4), // ratio, same style as your office endpoint's score variable
+      weight: "30%",
+      percentage_point: percentage_point.toFixed(4)
     });
 
   } catch (error) {
@@ -2228,6 +3511,161 @@ loans
       total_disbursed: total_disbursed.toFixed(2),
       month_1_defaulted: month_1_defaulted.toFixed(2),
       month_1_default_rate: (month_1_default_rate*100).toFixed(2) + "%",
+      weight: "40%",
+      percentage_point: percentage_point.toFixed(2)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
+
+
+//province
+// Month-1 Default Performance - Province Average
+app.get('/month-1-default-performance/province/:province_id', async (req, res) => {
+  try {
+    const { province_id } = req.params;
+
+    if (!province_id) {
+      return res.status(400).json({ message: "province_id is required" });
+    }
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        average_score: 0,
+        weight: "40%",
+        percentage_point: 0
+      });
+    }
+
+    const today = dayjs();
+    let province_scores = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+    for (const office of offices) {
+
+      const office_id = office.id;
+
+      const [consultants] = await pool.query(`
+        SELECT u.id
+        FROM users u
+        JOIN role_users ru ON ru.user_id = u.id
+        WHERE ru.role_id = 3
+          AND u.office_id = ?
+      `, [office_id]);
+
+      if (!consultants.length) continue;
+
+      let total_disbursed = 0;
+      let month_1_defaulted = 0;
+
+      for (const user of consultants) {
+
+        const [loans] = await pool.query(
+          `SELECT id, created_date, status FROM loans WHERE loan_officer_id = ?`,
+          [user.id]
+        );
+
+        if (!loans.length) continue;
+
+        const loanIds = loans.map(l => l.id);
+
+        const [transactions] = await pool.query(`
+          SELECT loan_id, debit, transaction_type, payment_apply_to, date
+          FROM loan_transactions
+          WHERE loan_id IN (?)
+        `, [loanIds]);
+
+        const loanDisbursementMap = {};
+        const loanMonth1PaymentMap = {};
+
+        loans.forEach(l => {
+          loanDisbursementMap[l.id] = 0;
+          loanMonth1PaymentMap[l.id] = false;
+        });
+
+        transactions.forEach(t => {
+          if (t.transaction_type === 'disbursement') {
+            loanDisbursementMap[t.loan_id] += Number(t.debit) || 0;
+          }
+
+          if (
+            t.transaction_type === 'repayment' &&
+            t.payment_apply_to === 'full_payment'
+          ) {
+            const loanCreated = loans.find(l => l.id === t.loan_id)?.created_date;
+
+            // Only mark as paid-in-month-1 if created_date exists and payment is within first month
+            if (loanCreated && dayjs(t.date).diff(dayjs(loanCreated), 'month') < 1) {
+              loanMonth1PaymentMap[t.loan_id] = true;
+            }
+          }
+        });
+
+        // Sum total disbursed for all loans
+        total_disbursed += Object.values(loanDisbursementMap).reduce((a, b) => a + b, 0);
+
+        // Calculate month-1 defaulted amount (only disbursed loans)
+        loans
+          .filter(l => l.status === 'disbursed')
+          .forEach(l => {
+            const loanAgeInMonths = today.diff(dayjs(l.created_date), 'month');
+
+            if (!loanMonth1PaymentMap[l.id] && loanAgeInMonths >= 1) {
+              month_1_defaulted += loanDisbursementMap[l.id];
+            }
+          });
+
+      }
+
+      const month_1_default_rate = total_disbursed > 0
+        ? month_1_defaulted / total_disbursed
+        : 0;
+
+      // ===============================
+      // Calculate Score (same as yours)
+      // ===============================
+      let score = 0;
+      const ratePercent = month_1_default_rate * 100;
+
+      if (ratePercent <= 25) {
+        score = 100;
+      } else {
+        score = 100 - ((ratePercent - 25) * 5);
+        if (score < 0) score = 0;
+      }
+
+      province_scores.push(score);
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE
+    // ===============================
+    const province_average =
+      province_scores.reduce((sum, s) => sum + s, 0) /
+      (province_scores.length || 1);
+
+    const percentage_point = province_average * 0.40;
+
+    return res.json({
+      province_id,
+      offices_count: province_scores.length,
+      average_score: province_average.toFixed(2) + "%",
       weight: "40%",
       percentage_point: percentage_point.toFixed(2)
     });
@@ -2370,6 +3808,173 @@ app.get('/3-month-recovery-achievement/:office_id', async (req, res) => {
   }
 });
 
+
+//province
+app.get('/3-month-recovery-achievement/province/:province_id', async (req, res) => {
+  try {
+    const { province_id } = req.params;
+
+    if (!province_id) {
+      return res.status(400).json({ message: "province_id is required" });
+    }
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        benchmark: "56.05%",
+        weight: "30%",
+        average_score: 0,
+        percentage_point: 0
+      });
+    }
+
+    const today = dayjs();
+    const BENCHMARK = 0.5605;
+
+    let province_scores = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+    for (const office of offices) {
+
+      const office_id = office.id;
+
+      const [consultants] = await pool.query(`
+        SELECT u.id
+        FROM users u
+        JOIN role_users ru ON ru.user_id = u.id
+        WHERE ru.role_id = 3
+          AND u.office_id = ?
+      `, [office_id]);
+
+      if (!consultants.length) continue;
+
+      let month_1_defaulted = 0;
+      let recovered_3_months = 0;
+
+      for (const user of consultants) {
+
+        const [loans] = await pool.query(
+          `SELECT id, created_date, status FROM loans WHERE loan_officer_id = ?`,
+          [user.id]
+        );
+
+        if (!loans.length) continue;
+
+        const loanIds = loans.map(l => l.id);
+
+        const [transactions] = await pool.query(`
+          SELECT loan_id, debit, credit, transaction_type, payment_apply_to, date
+          FROM loan_transactions
+          WHERE loan_id IN (?)
+        `, [loanIds]);
+
+        // Map loan_id -> disbursement sum & month1 full payment
+        const loanDisbursementMap = {};
+        const loanMonth1PaymentMap = {};
+
+        loans.forEach(l => {
+          loanDisbursementMap[l.id] = 0;
+          loanMonth1PaymentMap[l.id] = false;
+        });
+
+        transactions.forEach(t => {
+
+          if (t.transaction_type === 'disbursement') {
+            loanDisbursementMap[t.loan_id] += Number(t.debit) || 0;
+          }
+
+          if (
+            t.transaction_type === 'repayment' &&
+            t.payment_apply_to === 'full_payment'
+          ) {
+            const loanCreated = loans.find(l => l.id === t.loan_id)?.created_date;
+
+            // Check if full payment occurred within first month
+            if (loanCreated && dayjs(t.date).diff(dayjs(loanCreated), 'month') < 1) {
+              loanMonth1PaymentMap[t.loan_id] = true;
+            }
+          }
+        });
+
+        // Identify month-1 defaulted loans (your logic)
+        const month1DefaultedLoans = loans.filter(l => {
+          const loanAgeInMonths = today.diff(dayjs(l.created_date), 'month');
+          return l.status === 'disbursed' && !loanMonth1PaymentMap[l.id] && loanAgeInMonths >= 1;
+        });
+
+        // Sum month-1 defaulted amount
+        month1DefaultedLoans.forEach(l => {
+          month_1_defaulted += loanDisbursementMap[l.id];
+        });
+
+        // Recovery within 3 months (your logic)
+        month1DefaultedLoans.forEach(l => {
+          transactions.forEach(t => {
+            if (
+              t.loan_id === l.id &&
+              t.transaction_type === 'repayment' &&
+              ['full_payment', 'part_payment', 'reloan_payment'].includes(t.payment_apply_to)
+            ) {
+              const loanCreated = dayjs(l.created_date);
+              const paymentDate = dayjs(t.date);
+              const monthsDiff = paymentDate.diff(loanCreated, 'month', true);
+
+              if (monthsDiff <= 3) {
+                recovered_3_months += Number(t.credit) || 0;
+              }
+            }
+          });
+        });
+
+      }
+
+      const recovery_rate_3_months = month_1_defaulted > 0
+        ? recovered_3_months / month_1_defaulted
+        : 0;
+
+      let score = (recovery_rate_3_months / BENCHMARK) * 100;
+      if (score > 100) score = 100;
+      if (score < 0) score = 0;
+
+      province_scores.push(score);
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE
+    // ===============================
+    const province_average =
+      province_scores.reduce((sum, s) => sum + s, 0) /
+      (province_scores.length || 1);
+
+    const percentage_point = province_average * 0.30;
+
+    return res.json({
+      province_id,
+      offices_count: province_scores.length,
+      benchmark: "56.05%",
+      weight: "30%",
+      average_score: province_average.toFixed(2) + "%",
+      percentage_point: percentage_point.toFixed(2)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
+
 //roll rate  control
 app.get('/roll-rate-control/:office_id', async (req, res) => {
   try {
@@ -2463,6 +4068,119 @@ app.get('/roll-rate-control/:office_id', async (req, res) => {
         "90+_days": (rr_90_plus * 100).toFixed(2) + "%"
       },
       score: score.toFixed(2) + "%",
+      weight: "20%",
+      percentage_point: percentage_point.toFixed(2)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
+
+
+//province
+
+app.get('/roll-rate-control/province/:province_id', async (req, res) => {
+  try {
+    const { province_id } = req.params;
+
+    if (!province_id) {
+      return res.status(400).json({ message: "province_id is required" });
+    }
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        average_score: "0%",
+        weight: "20%",
+        percentage_point: 0
+      });
+    }
+
+    let province_scores = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+    for (const office of offices) {
+
+      const office_id = office.id;
+
+      // 1️⃣ GET DISBURSED LOANS FOR OFFICE
+      const [loans] = await pool.query(`
+        SELECT l.id, l.first_repayment_date
+        FROM loans l
+        JOIN users u ON u.id = l.loan_officer_id
+        WHERE u.office_id = ?
+        AND l.status = 'disbursed'
+      `, [office_id]);
+
+      const total_loans = loans.length;
+
+      if (total_loans === 0) continue;
+
+      let bucket_1_30 = 0;
+      let bucket_31_60 = 0;
+      let bucket_61_90 = 0;
+      let bucket_90_plus = 0;
+
+      const today = new Date();
+
+      // 2️⃣ CLASSIFY OVERDUE BUCKETS
+      for (let loan of loans) {
+
+        const dueDate = new Date(loan.first_repayment_date);
+        const diffTime = today - dueDate;
+        const diffDays = diffTime / (1000 * 60 * 60 * 24);
+
+        if (diffDays > 0 && diffDays <= 30) {
+          bucket_1_30++;
+        } else if (diffDays > 30 && diffDays <= 60) {
+          bucket_31_60++;
+        } else if (diffDays > 60 && diffDays <= 90) {
+          bucket_61_90++;
+        } else if (diffDays > 90) {
+          bucket_90_plus++;
+        }
+      }
+
+      // 3️⃣ CALCULATE ROLL RATES
+      const rr_1_30 = bucket_1_30 / total_loans;
+      const rr_31_60 = bucket_31_60 / total_loans;
+      const rr_61_90 = bucket_61_90 / total_loans;
+      const rr_90_plus = bucket_90_plus / total_loans;
+
+      // 4️⃣ SCORE (AVERAGE OF ROLL RATES)
+      const score =
+        ((rr_1_30 + rr_31_60 + rr_61_90 + rr_90_plus) / 4) * 100;
+
+      province_scores.push(score);
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE
+    // ===============================
+    const province_average =
+      province_scores.reduce((sum, s) => sum + s, 0) /
+      (province_scores.length || 1);
+
+    const percentage_point = province_average * 0.20;
+
+    return res.json({
+      province_id,
+      offices_count: province_scores.length,
+      average_score: province_average.toFixed(2) + "%",
       weight: "20%",
       percentage_point: percentage_point.toFixed(2)
     });
@@ -2607,6 +4325,165 @@ app.get('/long-term-delinquency-risk/:office_id', async (req, res) => {
   }
 });
 
+
+//province
+
+app.get('/long-term-delinquency-risk/province/:province_id', async (req, res) => {
+  try {
+    const { province_id } = req.params;
+
+    if (!province_id) {
+      return res.status(400).json({ message: "province_id is required" });
+    }
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        average_score: 0,
+        weight: "10%",
+        percentage_point: 0
+      });
+    }
+
+    const today = dayjs();
+    const TARGET = 43.95; // percent
+
+    let province_scores = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+    for (const office of offices) {
+
+      const office_id = office.id;
+
+      const [consultants] = await pool.query(`
+        SELECT u.id
+        FROM users u
+        JOIN role_users ru ON ru.user_id = u.id
+        WHERE ru.role_id = 3
+          AND u.office_id = ?
+      `, [office_id]);
+
+      if (!consultants.length) continue;
+
+      let month_1_default_loans = 0;
+      let long_term_delinquent_loans = 0;
+
+      for (const user of consultants) {
+
+        const [loans] = await pool.query(
+          `SELECT id, created_date FROM loans WHERE loan_officer_id = ?`,
+          [user.id]
+        );
+
+        if (!loans.length) continue;
+
+        const loanIds = loans.map(l => l.id);
+
+        const [transactions] = await pool.query(`
+          SELECT loan_id, transaction_type, payment_apply_to, date
+          FROM loan_transactions
+          WHERE loan_id IN (?)
+        `, [loanIds]);
+
+        const loanMonth1PaymentMap = {};
+        const loanFullPaymentMap = {};
+
+        loans.forEach(l => {
+          loanMonth1PaymentMap[l.id] = false;
+          loanFullPaymentMap[l.id] = false;
+        });
+
+        transactions.forEach(t => {
+          if (
+            t.transaction_type === 'repayment' &&
+            t.payment_apply_to === 'full_payment'
+          ) {
+            loanFullPaymentMap[t.loan_id] = true;
+
+            const loanCreated = loans.find(l => l.id === t.loan_id)?.created_date;
+
+            // Full payment within 1 month?
+            if (loanCreated && dayjs(t.date).diff(dayjs(loanCreated), 'month') < 1) {
+              loanMonth1PaymentMap[t.loan_id] = true;
+            }
+          }
+        });
+
+        // Month-1 defaults
+        const month1Defaults = loans.filter(l => {
+          const ageInMonths = today.diff(dayjs(l.created_date), 'month');
+          return !loanMonth1PaymentMap[l.id] && ageInMonths >= 1;
+        });
+
+        month_1_default_loans += month1Defaults.length;
+
+        // Long-term delinquent (no full payment after 3 months)
+        month1Defaults.forEach(l => {
+          const ageInMonths = today.diff(dayjs(l.created_date), 'month');
+          if (!loanFullPaymentMap[l.id] && ageInMonths >= 3) {
+            long_term_delinquent_loans++;
+          }
+        });
+
+      }
+
+      const long_term_default_rate =
+        month_1_default_loans > 0
+          ? long_term_delinquent_loans / month_1_default_loans
+          : 0;
+
+      const ratePercent = long_term_default_rate * 100;
+
+      // ===============================
+      // SCORE CALCULATION (same)
+      // ===============================
+      let score = 100;
+
+      if (ratePercent > TARGET) {
+        const excess = ratePercent - TARGET;
+        score = 100 - (excess * 2);
+        if (score < 0) score = 0;
+      }
+
+      province_scores.push(score);
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE
+    // ===============================
+    const province_average =
+      province_scores.reduce((sum, s) => sum + s, 0) /
+      (province_scores.length || 1);
+
+    const percentage_point = province_average * 0.10;
+
+    return res.json({
+      province_id,
+      offices_count: province_scores.length,
+      target: "43.95%",
+      average_score: province_average.toFixed(2),
+      weight: "10%",
+      percentage_point: percentage_point.toFixed(2)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
+
 //REVENUE & PERFORMANCE METRICS INDEX (RPMI)
 //Revenue Achievement
 
@@ -2694,6 +4571,131 @@ app.get('/revenue-achievement/:office_id', async (req, res) => {
       actual_revenue: total_revenue.toFixed(2),
       expected_revenue: EXPECTED_REVENUE,
       score: score.toFixed(2),
+      weight: "40%",
+      percentage_point: percentage_point.toFixed(2)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
+
+
+//province
+app.get('/revenue-achievement/province/:province_id', async (req, res) => {
+  try {
+    const { province_id } = req.params;
+
+    if (!province_id) {
+      return res.status(400).json({ message: "province_id is required" });
+    }
+
+    const EXPECTED_REVENUE = 418600;
+
+    // ✅ Use CURRENT CALENDAR MONTH (same as yours)
+    const start_date = dayjs().startOf('month').format('YYYY-MM-DD');
+    const end_date = dayjs().endOf('month').format('YYYY-MM-DD');
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        period: `${start_date} to ${end_date}`,
+        expected_revenue: EXPECTED_REVENUE,
+        average_score: 0,
+        weight: "40%",
+        percentage_point: 0
+      });
+    }
+
+    let province_scores = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+    for (const office of offices) {
+
+      const office_id = office.id;
+
+      const [consultants] = await pool.query(`
+        SELECT u.id
+        FROM users u
+        JOIN role_users ru ON ru.user_id = u.id
+        WHERE ru.role_id = 3
+          AND u.office_id = ?
+      `, [office_id]);
+
+      if (!consultants.length) continue;
+
+      let total_revenue = 0;
+
+      for (const user of consultants) {
+
+        const [loans] = await pool.query(
+          `SELECT id FROM loans WHERE loan_officer_id = ?`,
+          [user.id]
+        );
+
+        if (!loans.length) continue;
+
+        const loanIds = loans.map(l => l.id);
+
+        const [transactions] = await pool.query(`
+          SELECT credit, transaction_type, payment_apply_to
+          FROM loan_transactions
+          WHERE loan_id IN (?)
+            AND date >= ?
+            AND date <= ?
+        `, [loanIds, start_date, end_date]);
+
+        transactions.forEach(t => {
+          if (
+            t.transaction_type === 'repayment' &&
+            ['part_payment', 'full_payment', 'reloan_payment'].includes(t.payment_apply_to)
+          ) {
+            total_revenue += Number(t.credit) || 0;
+          }
+        });
+      }
+
+      // ===============================
+      // OFFICE SCORE
+      // ===============================
+      let score = EXPECTED_REVENUE > 0
+        ? (total_revenue / EXPECTED_REVENUE) * 100
+        : 0;
+
+      if (score > 100) score = 100; // keep your cap
+      if (score < 0) score = 0;
+
+      province_scores.push(score);
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE
+    // ===============================
+    const province_average =
+      province_scores.reduce((sum, s) => sum + s, 0) /
+      (province_scores.length || 1);
+
+    const percentage_point = province_average * 0.40;
+
+    return res.json({
+      province_id,
+      offices_count: province_scores.length,
+      period: `${start_date} to ${end_date}`,
+      expected_revenue: EXPECTED_REVENUE,
+      average_score: province_average.toFixed(2),
       weight: "40%",
       percentage_point: percentage_point.toFixed(2)
     });
@@ -2834,6 +4836,175 @@ const prev_end_date = dayjs().subtract(1, 'month').endOf('month').format('YYYY-M
 });
 
 
+//province
+
+app.get('/efficiency-ratio/province/:province_id', async (req, res) => {
+  try {
+    const { province_id } = req.params;
+
+    if (!province_id) {
+      return res.status(400).json({ message: "province_id is required" });
+    }
+
+    const start_date = dayjs().startOf('month').format('YYYY-MM-DD');
+    const end_date = dayjs().endOf('month').format('YYYY-MM-DD');
+
+    const prev_start_date = dayjs().subtract(1, 'month').startOf('month').format('YYYY-MM-DD');
+    const prev_end_date = dayjs().subtract(1, 'month').endOf('month').format('YYYY-MM-DD');
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        period: `${start_date} to ${end_date}`,
+        target: "55%",
+        average_score: 0,
+        weight: "30%",
+        percentage_point: 0
+      });
+    }
+
+    let province_scores = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+    for (const office of offices) {
+
+      const office_id = office.id;
+
+      // ===============================
+      // 1️⃣ OPERATING COSTS (THIS MONTH)
+      // ===============================
+      const [expenses] = await pool.query(`
+        SELECT amount
+        FROM expenses
+        WHERE office_id = ?
+          AND date >= ?
+          AND date <= ?
+      `, [office_id, start_date, end_date]);
+
+      const operating_costs = expenses.reduce(
+        (sum, e) => sum + (Number(e.amount) || 0),
+        0
+      );
+
+      // ===============================
+      // 2️⃣ GET CONSULTANTS IN OFFICE
+      // ===============================
+      const [consultants] = await pool.query(`
+        SELECT u.id
+        FROM users u
+        JOIN role_users ru ON ru.user_id = u.id
+        WHERE ru.role_id = 3
+          AND u.office_id = ?
+      `, [office_id]);
+
+      if (!consultants.length) continue;
+
+      let total_disbursed = 0;
+      let total_repayments = 0;
+
+      for (const user of consultants) {
+
+        const [loans] = await pool.query(
+          `SELECT id FROM loans WHERE loan_officer_id = ?`,
+          [user.id]
+        );
+
+        if (!loans.length) continue;
+
+        const loanIds = loans.map(l => l.id);
+
+        const [transactions] = await pool.query(`
+          SELECT debit, credit, transaction_type, payment_apply_to, date
+          FROM loan_transactions
+          WHERE loan_id IN (?)
+        `, [loanIds]);
+
+        transactions.forEach(t => {
+
+          // Disbursements (PREVIOUS MONTH)
+          if (
+            t.transaction_type?.toLowerCase().trim() === 'disbursement' &&
+            new Date(t.date) >= new Date(prev_start_date) &&
+            new Date(t.date) <= new Date(prev_end_date)
+          ) {
+            total_disbursed += Number(t.debit) || 0;
+          }
+
+          // Repayments (THIS MONTH)
+          if (
+            t.transaction_type?.toLowerCase().trim() === 'repayment' &&
+            new Date(t.date) >= new Date(start_date) &&
+            new Date(t.date) <= new Date(end_date) &&
+            ['part_payment', 'full_payment', 'reloan_payment']
+              .includes(t.payment_apply_to?.toLowerCase().trim())
+          ) {
+            total_repayments += Number(t.credit) || 0;
+          }
+
+        });
+      }
+
+      // ===============================
+      // 3️⃣ CALCULATE INCOME & CIR
+      // ===============================
+      const income = total_repayments - total_disbursed;
+
+      const CIR = income > 0
+        ? operating_costs / income
+        : 0;
+
+      // ===============================
+      // 4️⃣ SCORE
+      // ===============================
+      let score = CIR > 0
+        ? 0.55 / CIR
+        : 0;
+
+      // keep your cap behavior
+      if (score > 100) score = 100;
+      if (score < 0) score = 0;
+
+      province_scores.push(score);
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE
+    // ===============================
+    const province_average =
+      province_scores.reduce((sum, s) => sum + s, 0) /
+      (province_scores.length || 1);
+
+    const percentage_point = province_average * 0.30;
+
+    return res.json({
+      province_id,
+      period: `${start_date} to ${end_date}`,
+      target: "55%",
+      offices_count: province_scores.length,
+      average_score: province_average.toFixed(2),
+      weight: "30%",
+      percentage_point: percentage_point.toFixed(2)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
+
+
 
 //Profitability Contribution
 app.get('/profitability-contribution/:office_id', async (req, res) => {
@@ -2949,6 +5120,160 @@ app.get('/profitability-contribution/:office_id', async (req, res) => {
 });
 
 
+//province
+app.get('/profitability-contribution/province/:province_id', async (req, res) => {
+  try {
+    const { province_id } = req.params;
+
+    if (!province_id) {
+      return res.status(400).json({ message: "province_id is required" });
+    }
+
+    const start_date = dayjs().startOf('month').format('YYYY-MM-DD');
+    const end_date = dayjs().endOf('month').format('YYYY-MM-DD');
+
+    // ===============================
+    // 1️⃣ COMPANY OPERATING COSTS (THIS MONTH)
+    // ===============================
+    const [companyExpenses] = await pool.query(`
+      SELECT amount
+      FROM expenses
+      WHERE date >= ?
+        AND date <= ?
+    `, [start_date, end_date]);
+
+    const company_operating_costs = companyExpenses.reduce(
+      (sum, e) => sum + (Number(e.amount) || 0),
+      0
+    );
+
+    // ===============================
+    // 2️⃣ COMPANY REVENUE (THIS MONTH)
+    // ===============================
+    const [companyRevenueTx] = await pool.query(`
+      SELECT credit
+      FROM loan_transactions
+      WHERE transaction_type = 'repayment'
+        AND payment_apply_to IN ('part_payment','full_payment','reloan_payment')
+        AND date >= ?
+        AND date <= ?
+    `, [start_date, end_date]);
+
+    const company_revenue = companyRevenueTx.reduce(
+      (sum, t) => sum + (Number(t.credit) || 0),
+      0
+    );
+
+    const company_net_contribution =
+      company_revenue - company_operating_costs;
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        period: `${start_date} to ${end_date}`,
+        company_net_contribution: company_net_contribution.toFixed(2),
+        average_score: "0%",
+        weight: "20%",
+        percentage_point: 0
+      });
+    }
+
+    let province_scores = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+    for (const office of offices) {
+
+      const office_id = office.id;
+
+      // 3️⃣ BRANCH OPERATING COSTS
+      const [branchExpenses] = await pool.query(`
+        SELECT amount
+        FROM expenses
+        WHERE office_id = ?
+          AND date >= ?
+          AND date <= ?
+      `, [office_id, start_date, end_date]);
+
+      const branch_operating_costs = branchExpenses.reduce(
+        (sum, e) => sum + (Number(e.amount) || 0),
+        0
+      );
+
+      // 4️⃣ BRANCH REVENUE
+      const [branchRevenueTx] = await pool.query(`
+        SELECT lt.credit
+        FROM loan_transactions lt
+        JOIN loans l ON l.id = lt.loan_id
+        JOIN users u ON u.id = l.loan_officer_id
+        WHERE u.office_id = ?
+          AND lt.transaction_type = 'repayment'
+          AND lt.payment_apply_to IN ('part_payment','full_payment','reloan_payment')
+          AND lt.date >= ?
+          AND lt.date <= ?
+      `, [office_id, start_date, end_date]);
+
+      const branch_revenue = branchRevenueTx.reduce(
+        (sum, t) => sum + (Number(t.credit) || 0),
+        0
+      );
+
+      const branch_net_contribution =
+        branch_revenue - branch_operating_costs;
+
+      // 5️⃣ SCORE (same as yours)
+      let score = company_net_contribution !== 0
+        ? branch_net_contribution / company_net_contribution
+        : 0;
+
+      if (score > 1.5) score = 1.5; // cap at 150%
+      if (score < 0) score = 0;
+
+      // store as percentage score (0-150)
+      province_scores.push(score * 100);
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE
+    // ===============================
+    const province_average =
+      province_scores.reduce((sum, s) => sum + s, 0) /
+      (province_scores.length || 1);
+
+    // Your PP formula used ratio (0-1.5) * 0.20.
+    // Since we stored % (0-150), convert back to ratio for PP:
+    const avg_ratio = province_average / 100;
+
+    const percentage_point = avg_ratio * 0.20;
+
+    return res.json({
+      province_id,
+      offices_count: province_scores.length,
+      period: `${start_date} to ${end_date}`,
+      company_net_contribution: company_net_contribution.toFixed(2),
+      average_score: province_average.toFixed(2) + "%", // up to 150%
+      weight: "20%",
+      percentage_point: percentage_point.toFixed(2)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
+
+
 
 //Groth Trajectory
 
@@ -3026,6 +5351,131 @@ app.get('/growth-trajectory/:office_id', async (req, res) => {
       currentStart,
       currentEnd
       
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+
+//province
+app.get('/growth-trajectory/province/:province_id', async (req, res) => {
+  try {
+    const { province_id } = req.params;
+
+    if (!province_id) {
+      return res.status(400).json({ message: "province_id is required" });
+    }
+
+    // ===============================
+    // Current month
+    // ===============================
+    const currentStart = new Date();
+    currentStart.setDate(1);
+    currentStart.setHours(0, 0, 0, 0);
+
+    const currentEnd = new Date();
+    currentEnd.setMonth(currentEnd.getMonth() + 1);
+    currentEnd.setDate(0);
+    currentEnd.setHours(23, 59, 59, 999);
+
+    // ===============================
+    // Previous month
+    // ===============================
+    const previousStart = new Date(currentStart);
+    previousStart.setMonth(previousStart.getMonth() - 1);
+
+    const previousEnd = new Date(currentStart);
+    previousEnd.setDate(0);
+    previousEnd.setHours(23, 59, 59, 999);
+
+    // ===============================
+    // GET OFFICES IN PROVINCE
+    // ===============================
+    const [offices] = await pool.query(`
+      SELECT id
+      FROM offices
+      WHERE province_id = ?
+    `, [province_id]);
+
+    if (!offices.length) {
+      return res.json({
+        province_id,
+        offices_count: 0,
+        average_score: 0,
+        PP: 0,
+        currentStart,
+        currentEnd,
+        previousStart,
+        previousEnd
+      });
+    }
+
+    // Revenue calculation per office
+    const calculateRevenueForOffice = async (office_id, startDate, endDate) => {
+      const [transactions] = await pool.query(`
+        SELECT t.credit
+        FROM loan_transactions t
+        JOIN loans l ON l.id = t.loan_id
+        WHERE l.office_id = ?
+          AND t.payment_apply_to IN ('part_payment','full_payment','reloan_payment')
+          AND t.date BETWEEN ? AND ?
+      `, [office_id, startDate, endDate]);
+
+      return transactions.reduce((sum, tx) => sum + (Number(tx.credit) || 0), 0);
+    };
+
+    let office_scores = [];
+    let office_mom_values = [];
+
+    // ===============================
+    // LOOP THROUGH OFFICES
+    // ===============================
+    for (const office of offices) {
+      const office_id = office.id;
+
+      const currentRevenue = await calculateRevenueForOffice(office_id, currentStart, currentEnd);
+      const previousRevenue = await calculateRevenueForOffice(office_id, previousStart, previousEnd);
+
+      let momRevenue = 0;
+      if (previousRevenue > 0) {
+        momRevenue = (currentRevenue - previousRevenue) / previousRevenue;
+      }
+
+      let score = (momRevenue / 0.025) * 100;
+
+      if (score > 100) score = 100;
+      if (score < 0) score = 0;
+
+      office_scores.push(score);
+      office_mom_values.push(momRevenue);
+    }
+
+    // ===============================
+    // PROVINCE AVERAGE
+    // ===============================
+    const average_score =
+      office_scores.reduce((sum, s) => sum + s, 0) /
+      (office_scores.length || 1);
+
+    const avg_mom_revenue =
+      office_mom_values.reduce((sum, m) => sum + m, 0) /
+      (office_mom_values.length || 1);
+
+    const PP = average_score; // same as your endpoint
+
+    return res.json({
+      province_id,
+      offices_count: offices.length,
+      avg_mom_revenue,
+      average_score,
+      PP,
+      currentStart,
+      currentEnd,
+      previousStart,
+      previousEnd
     });
 
   } catch (error) {
