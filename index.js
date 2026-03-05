@@ -2383,7 +2383,7 @@ app.get('/roll-rate-control/:office_id', async (req, res) => {
     // 1️⃣ GET DISBURSED LOANS
     // ===============================
     const [loans] = await pool.query(`
-      SELECT l.id, l.due_date
+      SELECT l.id, l.first_repayment_date
       FROM loans l
       JOIN users u ON u.id = l.loan_officer_id
       WHERE u.office_id = ?
