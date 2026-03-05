@@ -2149,7 +2149,7 @@ app.get('/month-1-default-performance/:office_id', async (req, res) => {
 
     for (const user of consultants) {
       const [loans] = await pool.query(
-        `SELECT id, created_date FROM loans WHERE loan_officer_id = ?`,
+        `SELECT id, created_date,status FROM loans WHERE loan_officer_id = ?`,
         [user.id]
       );
 
