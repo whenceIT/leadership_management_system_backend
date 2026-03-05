@@ -2817,6 +2817,8 @@ const prev_end_date = dayjs().subtract(1, 'month').endOf('month').format('YYYY-M
       income: income.toFixed(2),
       CIR: CIR.toFixed(4),
       target: "55%",
+      repayments: total_repayments,
+      disbursed: total_disbursed,
       score: score.toFixed(2),
       weight: "30%",
       percentage_point: percentage_point.toFixed(2)
