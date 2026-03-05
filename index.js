@@ -1313,7 +1313,7 @@ app.get('/portfolio-load-balance/:office_id', async (req, res) => {
     const [loans] = await pool.query(`
       SELECT 
         l.id,
-        l.principal_amount
+        l.principal
       FROM loans l
       JOIN users u ON u.id = l.loan_officer_id
       WHERE u.office_id = ?
