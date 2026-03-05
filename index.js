@@ -2274,7 +2274,7 @@ app.get('/3-month-recovery-achievement/:office_id', async (req, res) => {
 
     for (const user of consultants) {
       const [loans] = await pool.query(
-        `SELECT id, created_date FROM loans WHERE loan_officer_id = ?`,
+        `SELECT id, created_date,status FROM loans WHERE loan_officer_id = ?`,
         [user.id]
       );
 
@@ -2315,10 +2315,10 @@ app.get('/3-month-recovery-achievement/:office_id', async (req, res) => {
       });
 
       // Identify month-1 defaulted loans
-      const month1DefaultedLoans = loans.filter(l => {
-        const loanAgeInMonths = today.diff(dayjs(l.created_date), 'month');
-        return !loanMonth1PaymentMap[l.id] && loanAgeInMonths >= 1;
-      });
+   const month1DefaultedLoans = loans.filter(l => {
+  const loanAgeInMonths = today.diff(dayjs(l.created_date), 'month');
+  return l.status === 'disbursed' && !loanMonth1PaymentMap[l.id] && loanAgeInMonths >= 1;
+});
 
       // Sum month-1 defaulted amount
       month1DefaultedLoans.forEach(l => {
