@@ -1,12 +1,16 @@
 const express = require('express');
 const router = express.Router();
-const pool = require('../../../db');
+const pool = require('../../db');
 
+/**
+ * @route POST /api/kpi-scores/monthly-disbursement
+ * @desc Record Monthly Disbursement KPI score
+ * @access Public
+ */
 router.post('/', async (req, res) => {
   try {
-    const { user_id, kpi_id, office_id, province_id, start_date, end_date, score } = req.body;
+    const { user_id, kpi_id, office_id, province_id, start_date, end_date } = req.body;
 
-    console.log('Received Month-1 Default Rate KPI score request:', req.body);
     // Validate required fields
     if (!user_id || !kpi_id || !office_id) {
       return res.status(400).json({
@@ -26,63 +30,34 @@ router.post('/', async (req, res) => {
     // Get KPI from database to verify it's the correct one
     const [kpiResult] = await pool.query(`
       SELECT * FROM smart_kpis 
-      WHERE id = ? AND position_id = 5
+      WHERE id = ? AND name = 'Monthly Disbursement' AND position_id = 5
     `, [kpi_id]);
 
     if (kpiResult.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Month-1 Default Rate KPI not found'
+        error: 'Monthly Disbursement KPI not found'
       });
     }
 
     const kpi = kpiResult[0];
 
-    let finalScore;
-    let calculationDetails;
+    // Calculate Monthly Disbursement: Total approved amount of disbursed loans
+    const [disbursementResult] = await pool.query(`
+      SELECT COALESCE(SUM(approved_amount), 0) AS total_disbursement
+      FROM loans
+      WHERE office_id = ?
+        AND status = 'disbursed'
+        AND disbursement_date BETWEEN ? AND ?
+    `, [office_id, effectiveStartDate, effectiveEndDate]);
 
-    if (score !== undefined) {
-      // If score is provided, use it directly (manual entry)
-      finalScore = parseFloat(score);
-      calculationDetails = {
-        manual_entry: true,
-        provided_score: finalScore
-      };
-    } else {
-      // Calculate Month-1 Default Rate: (Number of loans defaulted within 30 days of disbursement / Total disbursed loans) * 100
-      const [totalDisbursedResult] = await pool.query(`
-        SELECT 
-          COUNT(*) AS total_disbursed
-        FROM loans l
-        WHERE l.office_id = ?
-          AND l.disbursement_date BETWEEN ? AND ?
-      `, [office_id, effectiveStartDate, effectiveEndDate]);      
-      
-      const [defaultedInMonth1Result] = await pool.query(`
-        SELECT COUNT(*) AS defaulted_in_month1 FROM loans l 
-        WHERE l.office_id = ? 
-        AND l.expected_first_repayment_date <= DATE_SUB(CURDATE(), INTERVAL 30 DAY) 
-        AND l.disbursement_date BETWEEN ? AND ? 
-      `, [office_id, effectiveStartDate, effectiveEndDate]);
-      
-      const totalDisbursed = totalDisbursedResult[0].total_disbursed || 0;
-      const defaultedInMonth1 = defaultedInMonth1Result[0].defaulted_in_month1 || 0;
+    const totalDisbursement = disbursementResult[0].total_disbursement;
 
-      finalScore = totalDisbursed > 0 ? ((defaultedInMonth1 / totalDisbursed) * 100).toFixed(2) : 0;
-
-      calculationDetails = {
-        manual_entry: false,
-        total_disbursed: totalDisbursed,
-        defaulted_in_month1: defaultedInMonth1,
-        default_rate: parseFloat(finalScore)
-      };
-    }
-
-    // Validate score is percentage (should always be true since we calculated it)
-    if (kpi.scoring !== 'percentage') {
+    // Validate score is numeric (should always be true since we calculated it)
+    if (kpi.scoring !== 'numeric') {
       return res.status(500).json({
         success: false,
-        error: 'Month-1 Default Rate KPI should have percentage scoring'
+        error: 'Monthly Disbursement KPI should have numeric scoring'
       });
     }
 
@@ -96,47 +71,48 @@ router.post('/', async (req, res) => {
       // Update existing score
       await pool.query(
         'UPDATE smart_kpi_score SET score = ?, created_date = NOW() WHERE kpi_id = ? AND user_id = ?',
-        [finalScore, kpi.id, user_id]
+        [totalDisbursement, kpi.id, user_id]
       );
     } else {
       // Insert new score
       await pool.query(
         'INSERT INTO smart_kpi_score (kpi_id, user_id, score, created_date) VALUES (?, ?, ?, NOW())',
-        [kpi.id, user_id, finalScore]
+        [kpi.id, user_id, totalDisbursement]
       );
     }
 
     res.json({
       success: true,
-      message: 'Month-1 Default Rate KPI score recorded successfully',
+      message: 'Monthly Disbursement KPI score recorded successfully',
       data: {
         kpi_id: kpi.id,
         user_id,
-        office_id,
-        score: parseFloat(finalScore),
+        score: totalDisbursement,
         kpi_name: kpi.name,
         weight: kpi.weight,
         period: {
           start_date: effectiveStartDate,
           end_date: effectiveEndDate
         },
-        calculation: calculationDetails
+        calculation: {
+          total_disbursement: totalDisbursement
+        }
       }
     });
 
   } catch (error) {
-    console.error('Error recording Month-1 Default Rate KPI score:', error);
+    console.error('Error recording Monthly Disbursement KPI score:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to record Month-1 Default Rate KPI score. Try again',
+      error: 'Failed to record Monthly Disbursement KPI score',
       message: error.message
     });
   }
 });
 
 /**
- * @route GET /api/kpi-scores/month1-default-rate/:user_id
- * @desc Get Month-1 Default Rate KPI score for a user
+ * @route GET /api/kpi-scores/monthly-disbursement/:user_id
+ * @desc Get Monthly Disbursement KPI score for a user
  * @access Public
  */
 router.get('/:user_id', async (req, res) => {
@@ -147,7 +123,7 @@ router.get('/:user_id', async (req, res) => {
       SELECT s.*, k.name, k.description, k.scoring, k.target, k.category, k.weight
       FROM smart_kpi_score s
       JOIN smart_kpis k ON s.kpi_id = k.id
-      WHERE k.name = 'Month-1 Default Rate' 
+      WHERE k.name = 'Monthly Disbursement' 
         AND k.position_id = 5
         AND s.user_id = ?
     `, [user_id]);
@@ -155,7 +131,7 @@ router.get('/:user_id', async (req, res) => {
     if (scoreResult.length === 0) {
       return res.json({
         success: true,
-        message: 'No Month-1 Default Rate KPI score found for this user',
+        message: 'No Monthly Disbursement KPI score found for this user',
         data: null
       });
     }
@@ -166,10 +142,10 @@ router.get('/:user_id', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error fetching Month-1 Default Rate KPI score:', error);
+    console.error('Error fetching Monthly Disbursement KPI score:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch Month-1 Default Rate KPI score',
+      error: 'Failed to fetch Monthly Disbursement KPI score',
       message: error.message
     });
   }

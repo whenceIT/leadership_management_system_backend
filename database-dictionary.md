@@ -1215,78 +1215,8 @@ updated_at	timestamp	Yes	NULL
 Indexes
 Keyname	Type	Unique	Packed	Column	Cardinality	Collation	Null	Comment
 PRIMARY	BTREE	Yes	No	id	3	A	No	
-loan_repayment_schedules
-Column	Type	Null	Default	Links to	Comments	Media type
-id (Primary)	int	No				
-loan_id	int	Yes	NULL			
-installment	int	Yes	NULL			
-due_date	date	Yes	NULL			
-from_date	date	Yes	NULL			
-month	varchar(191)	Yes	NULL			
-year	varchar(191)	Yes	NULL			
-principal	decimal(65,4)	Yes	NULL			
-principal_waived	decimal(65,4)	Yes	NULL			
-principal_written_off	decimal(65,4)	Yes	NULL			
-principal_paid	decimal(65,4)	Yes	NULL			
-interest	decimal(65,4)	Yes	NULL			
-interest_waived	decimal(65,4)	Yes	NULL			
-interest_written_off	decimal(65,4)	Yes	NULL			
-interest_paid	decimal(65,4)	Yes	NULL			
-fees	decimal(65,4)	Yes	NULL			
-fees_waived	decimal(65,4)	Yes	NULL			
-fees_written_off	decimal(65,4)	Yes	NULL			
-fees_paid	decimal(65,4)	Yes	NULL			
-penalty	decimal(65,4)	Yes	NULL			
-penalty_waived	decimal(65,4)	Yes	NULL			
-penalty_written_off	decimal(65,4)	Yes	NULL			
-penalty_paid	decimal(65,4)	Yes	NULL			
-total_due	decimal(65,4)	Yes	NULL			
-total_paid_advance	decimal(65,4)	Yes	NULL			
-total_paid_late	decimal(65,4)	Yes	NULL			
-paid	tinyint	No	0			
-modified_by_id	int	Yes	NULL			
-created_by_id	int	Yes	NULL			
-created_at	timestamp	Yes	NULL			
-updated_at	timestamp	Yes	NULL			
-Indexes
-Keyname	Type	Unique	Packed	Column	Cardinality	Collation	Null	Comment
-PRIMARY	BTREE	Yes	No	id	175760	A	No	
-loan_reschedule_requests
-Column	Type	Null	Default	Links to	Comments	Media type
-id (Primary)	int	No				
-loan_id	int	Yes	NULL			
-principal	decimal(65,4)	Yes	NULL			
-status	enum('pending', 'approved', 'rejected')	No	pending			
-created_by_id	int	Yes	NULL			
-modified_by_id	int	Yes	NULL			
-approved_by_id	int	Yes	NULL			
-rejected_by_id	int	Yes	NULL			
-created_date	date	Yes	NULL			
-modified_date	date	Yes	NULL			
-approved_date	date	Yes	NULL			
-rejected_date	date	Yes	NULL			
-reschedule_from_date	date	Yes	NULL			
-recalculate_interest	int	No	0			
-notes	text	Yes	NULL			
-created_at	timestamp	Yes	NULL			
-updated_at	timestamp	Yes	NULL			
-Indexes
-Keyname	Type	Unique	Packed	Column	Cardinality	Collation	Null	Comment
-PRIMARY	BTREE	Yes	No	id	0	A	No	
-loan_topup
-Column	Type	Null	Default	Links to	Comments	Media type
-id (Primary)	int	No				
-date	date	Yes	NULL			
-loan_id	int	Yes	NULL			
-office_id	int	Yes	NULL			
-created_by	int	Yes	NULL			
-amount	decimal(65,4)	Yes	NULL			
-balance_bf	decimal(10,0)	Yes	NULL			
-balance_new	decimal(10,0)	Yes	NULL			
-status	varchar(191)	No				
-Indexes
-Keyname	Type	Unique	Packed	Column	Cardinality	Collation	Null	Comment
-PRIMARY	BTREE	Yes	No	id	1027	A	No	
+
+<!-- =================================================================== -->
 loan_transactions
 Column	Type	Null	Default	Links to	Comments	Media type
 id (Primary)	int	No				
@@ -1294,7 +1224,7 @@ loan_id	int	Yes	NULL
 office_id	int	Yes	NULL			
 client_id	int	Yes	NULL			
 payment_type_id	int	Yes	NULL			
-transaction_type	enum('repayment', 'repayment_disbursement', 'write_off', 'write_off_recovery', 'disbursement', 'interest_accrual', 'fee_accrual', 'penalty_accrual', 'deposit', 'withdrawal', 'manual_entry', 'pay_charge', 'transfer_fund', 'interest', 'income', 'fee', 'disbursement_fee', 'installment_fee', 'specified_due_date_fee', 'overdue_maturity', 'overdue_installment_fee', 'loan_rescheduling_fee', 'penalty', 'interest_waiver', 'charge_waiver', 'interest_initial')	Yes	repayment			
+transaction_type	enum('repayment', 'repayment_disbursement', 'write_off', 'write_off_recovery', 'disbursement', 'interest','specified_due_date_fee', 'penalty', 'interest_waiver', 'interest_initial')	Yes	repayment			
 created_by_id	int	Yes	NULL			
 modified_by_id	int	Yes	NULL			
 payment_detail_id	int	Yes	NULL			
@@ -1336,6 +1266,9 @@ cycle_date	date	Yes	NULL
 Indexes
 Keyname	Type	Unique	Packed	Column	Cardinality	Collation	Null	Comment
 PRIMARY	BTREE	Yes	No	id	536002	A	No	
+
+
+
 loan_transactions_pending
 Column	Type	Null	Default	Links to	Comments	Media type
 id (Primary)	int	No				

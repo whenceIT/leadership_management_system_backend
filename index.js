@@ -326,7 +326,7 @@ app.get("/loan/:id", async (req, res) => {
 
 
 // KPI Scores APIs
-const kpiScoresRouter = require('./api/kpi_scores');
+const kpiScoresRouter = require('./api');
 app.use('/api/kpi-scores', kpiScoresRouter);
 
 app.get("/offices",async(req,res)=>{
@@ -1724,14 +1724,13 @@ app.get('/collections-rate', async (req, res) => {
 
         // Get expected amounts - separate query
         const [expectedResultMain] = await pool.query(`
-            SELECT 
-                COALESCE(SUM(lrs.total_due), 0) AS total_expected,
-                COUNT(DISTINCT lrs.loan_id) AS loans_with_due
-            FROM loan_repayment_schedules lrs
-            JOIN loans l ON lrs.loan_id = l.id
+            SELECT
+                COALESCE(SUM(l.principal_derived + l.interest_derived + l.fees_derived + l.penalty_derived), 0) AS total_expected,
+                COUNT(*) AS loans_with_due
+            FROM loans l
             WHERE l.office_id = ?
-              AND lrs.due_date BETWEEN ? AND ?
-              AND l.status IN ('disbursed', 'closed', 'paid')
+              AND l.disbursement_date BETWEEN ? AND ?
+              AND l.status = 'disbursed'
         `, [office_id, startDate, endDate]);
 
         // Query for previous period (for trend comparison)
@@ -1749,13 +1748,12 @@ app.get('/collections-rate', async (req, res) => {
         `, [office_id, prevStartDate, prevEndDate]);
 
         const [prevExpectedResult] = await pool.query(`
-            SELECT 
-                COALESCE(SUM(lrs.total_due), 0) AS total_expected
-            FROM loan_repayment_schedules lrs
-            JOIN loans l ON lrs.loan_id = l.id
+            SELECT
+                COALESCE(SUM(l.principal_derived + l.interest_derived + l.fees_derived + l.penalty_derived), 0) AS total_expected
+            FROM loans l
             WHERE l.office_id = ?
-              AND lrs.due_date BETWEEN ? AND ?
-              AND l.status IN ('disbursed', 'closed', 'paid')
+              AND l.disbursement_date BETWEEN ? AND ?
+              AND l.status = 'disbursed'
         `, [office_id, prevStartDate, prevEndDate]);
 
         // Alternative calculation using derived fields (more accurate)
@@ -1776,19 +1774,19 @@ app.get('/collections-rate', async (req, res) => {
 
         // Get expected collections from repayment schedules
         const [expectedResult] = await pool.query(`
-            SELECT 
-                COALESCE(SUM(lrs.total_due), 0) AS total_expected,
-                COALESCE(SUM(lrs.principal), 0) AS principal_expected,
-                COALESCE(SUM(lrs.interest), 0) AS interest_expected,
-                COALESCE(SUM(lrs.fees), 0) AS fees_expected,
-                COALESCE(SUM(lrs.penalty), 0) AS penalty_expected,
-                COUNT(DISTINCT lrs.loan_id) AS loans_with_due,
+            SELECT
+                COALESCE(SUM(l.principal_derived + l.interest_derived + l.fees_derived + l.penalty_derived), 0) AS total_expected,
+                COALESCE(SUM(l.principal_derived), 0) AS principal_expected,
+                COALESCE(SUM(l.interest_derived), 0) AS interest_expected,
+                COALESCE(SUM(l.fees_derived), 0) AS fees_expected,
+                COALESCE(SUM(l.penalty_derived), 0) AS penalty_expected,
+                COUNT(*) AS loans_with_due,
                 COUNT(*) AS total_installments
-            FROM loan_repayment_schedules lrs
-            JOIN loans l ON lrs.loan_id = l.id
+            FROM loans l
             WHERE l.office_id = ?
-              AND lrs.due_date BETWEEN ? AND ?
-        `, [office_id, startDate, endDate]);
+              AND l.disbursement_date BETWEEN ? AND ?
+              AND l.status = 'disbursed'
+            `, [office_id, startDate, endDate]);
 
         // Get collected amounts breakdown
         const [collectedBreakdown] = await pool.query(`
@@ -1850,22 +1848,14 @@ app.get('/collections-rate', async (req, res) => {
 
         // Get top performing loan officers for collections
         const [officerPerformance] = await pool.query(`
-            SELECT 
+            SELECT
                 u.id AS officer_id,
                 CONCAT(u.first_name, ' ', u.last_name) AS officer_name,
                 COUNT(DISTINCT lt.loan_id) AS loans_collected,
-                SUM(lt.principal + lt.interest + lt.fee + lt.penalty) AS total_collected,
-                SUM(lrs.total_due) AS total_expected,
-                CASE 
-                    WHEN SUM(lrs.total_due) > 0 
-                    THEN ROUND((SUM(lt.principal + lt.interest + lt.fee + lt.penalty) / SUM(lrs.total_due)) * 100, 2)
-                    ELSE 0 
-                END AS collection_rate
+                SUM(lt.principal + lt.interest + lt.fee + lt.penalty) AS total_collected
             FROM loan_transactions lt
             JOIN loans l ON lt.loan_id = l.id
             JOIN users u ON l.loan_officer_id = u.id
-            LEFT JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id 
-                AND lrs.due_date BETWEEN ? AND ?
             WHERE l.office_id = ?
               AND lt.transaction_type = 'repayment'
               AND lt.date BETWEEN ? AND ?
@@ -1874,7 +1864,7 @@ app.get('/collections-rate', async (req, res) => {
             GROUP BY u.id, u.first_name, u.last_name
             ORDER BY total_collected DESC
             LIMIT 10
-        `, [startDate, endDate, office_id, startDate, endDate]);
+        `, [office_id, startDate, endDate]);
 
         // Response
         return res.json({
@@ -2027,25 +2017,18 @@ app.get('/active-loans', async (req, res) => {
 
         // Get outstanding balance from repayment schedules (more accurate)
         const [scheduleOutstandingResult] = await pool.query(`
-            SELECT 
-                COALESCE(SUM(lrs.total_due), 0) AS total_due,
-                COALESCE(SUM(lrs.principal), 0) AS principal_due,
-                COALESCE(SUM(lrs.interest), 0) AS interest_due,
-                COALESCE(SUM(lrs.fees), 0) AS fees_due,
-                COALESCE(SUM(lrs.penalty), 0) AS penalty_due,
-                COALESCE(SUM(lrs.principal_paid), 0) AS principal_paid,
-                COALESCE(SUM(lrs.interest_paid), 0) AS interest_paid,
-                COALESCE(SUM(lrs.fees_paid), 0) AS fees_paid,
-                COALESCE(SUM(lrs.penalty_paid), 0) AS penalty_paid,
-                COALESCE(SUM(
-                    COALESCE(lrs.total_due, 0) - 
-                    COALESCE(lrs.principal_paid, 0) - 
-                    COALESCE(lrs.interest_paid, 0) - 
-                    COALESCE(lrs.fees_paid, 0) - 
-                    COALESCE(lrs.penalty_paid, 0)
-                ), 0) AS outstanding_balance
-            FROM loan_repayment_schedules lrs
-            JOIN loans l ON lrs.loan_id = l.id
+            SELECT
+                COALESCE(SUM(l.principal_derived + l.interest_derived + l.fees_derived + l.penalty_derived), 0) AS total_due,
+                COALESCE(SUM(l.principal_derived), 0) AS principal_due,
+                COALESCE(SUM(l.interest_derived), 0) AS interest_due,
+                COALESCE(SUM(l.fees_derived), 0) AS fees_due,
+                COALESCE(SUM(l.penalty_derived), 0) AS penalty_due,
+                0 AS principal_paid,
+                0 AS interest_paid,
+                0 AS fees_paid,
+                0 AS penalty_paid,
+                COALESCE(SUM(l.principal_derived + l.interest_derived + l.fees_derived + l.penalty_derived), 0) AS outstanding_balance
+            FROM loans l
             WHERE l.office_id = ?
               AND l.status = 'disbursed'
               ${loan_officer_id ? 'AND l.loan_officer_id = ?' : ''}
@@ -2157,7 +2140,7 @@ app.get('/active-loans', async (req, res) => {
         // Include detailed loan list if requested
         if (include_details === 'true') {
             const [loanDetails] = await pool.query(`
-                SELECT 
+                SELECT
                     l.id AS loan_id,
                     l.account_number,
                     l.principal,
@@ -2173,11 +2156,8 @@ app.get('/active-loans', async (req, res) => {
                     u.id AS officer_id,
                     CONCAT(u.first_name, ' ', u.last_name) AS officer_name,
                     lp.name AS product_name,
-                    (SELECT COALESCE(SUM(lrs.total_due - lrs.principal_paid - lrs.interest_paid - lrs.fees_paid - lrs.penalty_paid), 0)
-                     FROM loan_repayment_schedules lrs WHERE lrs.loan_id = l.id) AS outstanding_balance,
-                    (SELECT MIN(DATEDIFF(CURDATE(), lrs2.due_date))
-                     FROM loan_repayment_schedules lrs2 
-                     WHERE lrs2.loan_id = l.id AND lrs2.paid = 0 AND lrs2.due_date < CURDATE()) AS days_in_arrears
+                    (l.principal_derived + l.interest_derived + l.fees_derived + l.penalty_derived) AS outstanding_balance,
+                    MAX(0, DATEDIFF(CURDATE(), l.expected_first_repayment_date)) AS days_in_arrears
                 FROM loans l
                 LEFT JOIN clients c ON l.client_id = c.id
                 LEFT JOIN users u ON l.loan_officer_id = u.id
@@ -2382,26 +2362,17 @@ app.get('/province-branches-performance', async (req, res) => {
 
             // Get PAR (Portfolio at Risk) - using SUM aggregation to comply with GROUP BY
             const [parResult] = await pool.query(`
-                SELECT 
-                    COALESCE(SUM(CASE WHEN arrears_days > 30 THEN outstanding_balance ELSE 0 END), 0) AS par_balance,
-                    COALESCE(SUM(outstanding_balance), 0) AS total_portfolio,
-                    CASE 
-                        WHEN SUM(outstanding_balance) > 0 
-                        THEN ROUND((SUM(CASE WHEN arrears_days > 30 THEN outstanding_balance ELSE 0 END) / SUM(outstanding_balance)) * 100, 2)
-                        ELSE 0 
+                SELECT
+                    COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), l.expected_first_repayment_date) > 30 THEN (l.principal_derived + l.interest_derived + l.fees_derived + l.penalty_derived) ELSE 0 END), 0) AS par_balance,
+                    COALESCE(SUM(l.principal_derived + l.interest_derived + l.fees_derived + l.penalty_derived), 0) AS total_portfolio,
+                    CASE
+                        WHEN SUM(l.principal_derived + l.interest_derived + l.fees_derived + l.penalty_derived) > 0
+                        THEN ROUND((SUM(CASE WHEN DATEDIFF(CURDATE(), l.expected_first_repayment_date) > 30 THEN (l.principal_derived + l.interest_derived + l.fees_derived + l.penalty_derived) ELSE 0 END) / SUM(l.principal_derived + l.interest_derived + l.fees_derived + l.penalty_derived)) * 100, 2)
+                        ELSE 0
                     END AS par_rate
-                FROM (
-                    SELECT 
-                        l.id,
-                        DATEDIFF(CURDATE(), MIN(lrs.due_date)) AS arrears_days,
-                        SUM(lrs.total_due - COALESCE(lrs.principal_paid, 0) - COALESCE(lrs.interest_paid, 0) - COALESCE(lrs.fees_paid, 0) - COALESCE(lrs.penalty_paid, 0)) AS outstanding_balance
-                    FROM loans l
-                    JOIN loan_repayment_schedules lrs ON lrs.loan_id = l.id
-                    WHERE l.office_id = ?
-                      AND l.status = 'disbursed'
-                      AND lrs.paid = 0
-                    GROUP BY l.id
-                ) portfolio
+                FROM loans l
+                WHERE l.office_id = ?
+                  AND l.status = 'disbursed'
             `, [branchId]);
 
             // Get collections - use separate queries to avoid GROUP BY issues
@@ -2419,13 +2390,12 @@ app.get('/province-branches-performance', async (req, res) => {
             `, [branchId, startDate, endDate]);
 
             const [expectedResult] = await pool.query(`
-                SELECT 
-                    COALESCE(SUM(lrs.total_due), 0) AS total_expected
-                FROM loan_repayment_schedules lrs
-                JOIN loans l ON lrs.loan_id = l.id
+                SELECT
+                    COALESCE(SUM(l.principal_derived + l.interest_derived + l.fees_derived + l.penalty_derived), 0) AS total_expected
+                FROM loans l
                 WHERE l.office_id = ?
-                  AND lrs.due_date BETWEEN ? AND ?
-                  AND l.status IN ('disbursed', 'closed', 'paid')
+                  AND l.disbursement_date BETWEEN ? AND ?
+                  AND l.status = 'disbursed'
             `, [branchId, startDate, endDate]);
 
             const totalCollected = parseFloat(collectedResult[0].total_collected) || 0;
@@ -3541,12 +3511,12 @@ app.get('/branch-collection-waterfall', async (req, res) => {
         }
 
         // Set default dates
-        const defaultStartDate = '2023-02-01';
         const today = new Date();
-        const defaultEndDate = today.toISOString().split('T')[0];
+        const defaultStartDate = new Date(today.getFullYear(), today.getMonth() - 1, 24);
+        const defaultEndDate = new Date(today.getFullYear(), today.getMonth(), 24);
         
-        const startDate = start_date || defaultStartDate;
-        const endDate = end_date || defaultEndDate;
+        const startDate = start_date || defaultStartDate.toISOString().split('T')[0];
+        const endDate = end_date || defaultEndDate.toISOString().split('T')[0];
 
         // Get branch info
         const [branchInfoResult] = await pool.query(`
@@ -3575,7 +3545,7 @@ app.get('/branch-collection-waterfall', async (req, res) => {
             JOIN loans l ON lrs.loan_id = l.id
             WHERE l.office_id = ?
               AND lrs.due_date BETWEEN ? AND ?
-              AND l.status IN ('disbursed', 'closed', 'paid')
+              AND l.status = 'disbursed'
         `, [office_id, startDate, endDate]);
 
         // 2. COLLECTED AMOUNT - Full payments and reloan payments received
@@ -3597,9 +3567,7 @@ app.get('/branch-collection-waterfall', async (req, res) => {
               AND lt.transaction_type = 'repayment'
               AND (lt.payment_apply_to IN ('full_payment', 'reloan_payment') OR lt.payment_apply_to IS NULL)
               AND lt.date BETWEEN ? AND ?
-              AND lt.reversed = 0
-              AND lt.status = 'approved'
-              AND l.status IN ('disbursed', 'closed', 'paid')
+              AND l.status = 'disbursed'
         `, [office_id, startDate, endDate]);
 
         // 3. PARTIAL AMOUNT - Partial payments received
@@ -3619,9 +3587,6 @@ app.get('/branch-collection-waterfall', async (req, res) => {
               AND lt.transaction_type = 'repayment'
               AND lt.payment_apply_to = 'part_payment'
               AND lt.date BETWEEN ? AND ?
-              AND lt.reversed = 0
-              AND lt.status = 'approved'
-              AND l.status IN ('disbursed', 'closed', 'paid')
         `, [office_id, startDate, endDate]);
 
         // 4. OVERDUE AMOUNT - Uncollected amounts past due date
@@ -3644,8 +3609,7 @@ app.get('/branch-collection-waterfall', async (req, res) => {
             FROM loan_repayment_schedules lrs
             JOIN loans l ON lrs.loan_id = l.id
             WHERE l.office_id = ?
-              AND lrs.due_date < CURDATE()
-              AND lrs.paid = 0
+              AND l.expected_first_repayment_date < CURDATE()
               AND l.status = 'disbursed'
         `, [office_id]);
 
@@ -3678,7 +3642,7 @@ app.get('/branch-collection-waterfall', async (req, res) => {
               AND lt.date BETWEEN ? AND ?
               AND lt.reversed = 0
               AND lt.status = 'approved'
-              AND l.status IN ('disbursed', 'closed', 'paid')
+              AND l.status IN ('disbursed', 'closed')
             GROUP BY u.id, u.first_name, u.last_name
             ORDER BY total_collected DESC
         `, [office_id, startDate, endDate]);
