@@ -5514,7 +5514,8 @@ app.get("/staff-adequacy/company", async (req, res) => {
         percentage_point: 0,
       });
     }
-    console.log(offices)
+
+    console.log(offices + 'hellooo')
 
     const scores = [];
 
