@@ -2330,8 +2330,8 @@ app.get('/3-month-recovery-achievement/:office_id', async (req, res) => {
         transactions.forEach(t => {
           if (
             t.loan_id === l.id &&
-            t.transaction_type === 'repayment' &&
-            t.payment_apply_to === 'full_payment'
+           t.transaction_type === 'repayment' &&
+['full_payment', 'part_payment', 'reloan_payment'].includes(t.payment_apply_to)
           ) {
             const loanCreated = dayjs(l.created_date);
             const paymentDate = dayjs(t.date);
