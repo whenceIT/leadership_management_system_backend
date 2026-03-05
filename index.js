@@ -1258,7 +1258,7 @@ app.get("/vacancy-impact/:office_id", async (req, res) => {
     const [rows] = await pool.query(`
       SELECT COUNT(DISTINCT u.id) AS total
       FROM users u
-      INNER JOIN user_roles ur ON ur.user_id = u.id
+      INNER JOIN role_users ur ON ur.user_id = u.id
       WHERE ur.role_id = 3
       AND u.office_id = ?
     `, [office_id]);
