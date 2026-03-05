@@ -2984,7 +2984,7 @@ app.get('/growth-trajectory/:office_id', async (req, res) => {
         FROM loan_transactions t
         JOIN loans l ON l.id = t.loan_id
         WHERE l.office_id = ?
-        AND t.transaction_type IN ('part_payment','full_payment','reloan_payment')
+        AND t.payment_apply_to IN ('part_payment','full_payment','reloan_payment')
         AND t.date BETWEEN ? AND ?
         `,
         [office_id, startDate, endDate]
