@@ -1109,7 +1109,7 @@ app.get("/staff-adequacy/:id", async (req, res) => {
 });
 
 
-app.post('/productivity-achievement/:id', async (req, res) => {
+app.get('/productivity-achievement/:office_id', async (req, res) => {
   try {
 
     const { office_id } = req.params;
