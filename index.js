@@ -1324,7 +1324,7 @@ app.get('/portfolio-load-balance/:office_id', async (req, res) => {
 
     for (let loan of loans) {
 
-      console.log(loan.id + 'hey')
+      
 
       // Get total repayments for this loan
       const [repayments] = await pool.query(`
@@ -1421,7 +1421,7 @@ app.get('/portfolio-load-balance/:office_id', async (req, res) => {
 // LOAN CONSULTANT PERFORMANCE INDEX (LCPI)
 
 //Volume Achievement
-app.post('/volume-achievement/:office_id', async (req, res) => {
+app.get('/volume-achievement/:office_id', async (req, res) => {
   try {
 
     const { office_id } = req.params;
