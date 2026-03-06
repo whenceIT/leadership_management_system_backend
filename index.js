@@ -1786,18 +1786,47 @@ app.get("/collection-efficiency/company", async (req, res) => {
   }
 });
 
-
 app.get('/vetting-compliance-rate/company', async (req, res) => {
   try {
-    // ===============================
-    // GET ALL OFFICES
-    // ===============================
-    const [offices] = await pool.query(`
-      SELECT id
-      FROM offices
+    const [rows] = await pool.query(`
+      SELECT 
+        x.office_id,
+        x.total_loans,
+        x.fully_documented_loans,
+        CASE
+          WHEN x.total_loans = 0 THEN 0
+          WHEN (x.fully_documented_loans / x.total_loans) * 100 >= 80
+            THEN (x.fully_documented_loans / x.total_loans) * 100
+          ELSE 0
+        END AS office_score
+      FROM (
+        SELECT 
+          l.office_id,
+          COUNT(DISTINCT l.id) AS total_loans,
+          COUNT(DISTINCT CASE
+            WHEN ci.client_id IS NOT NULL
+              AND c.picture IS NOT NULL
+              AND c.picture <> ''
+              AND d.record_id IS NOT NULL
+              AND nk.client_id IS NOT NULL
+              AND l.vetted_by IS NOT NULL
+              AND l.verified_by IS NOT NULL
+            THEN l.id
+          END) AS fully_documented_loans
+        FROM loans l
+        LEFT JOIN client_identifications ci 
+          ON ci.client_id = l.client_id
+        LEFT JOIN clients c 
+          ON c.id = l.client_id
+        LEFT JOIN documents d 
+          ON d.record_id = l.client_id
+        LEFT JOIN client_next_of_kin nk 
+          ON nk.client_id = l.client_id
+        GROUP BY l.office_id
+      ) x
     `);
 
-    if (!offices.length) {
+    if (!rows.length) {
       return res.json({
         offices_count: 0,
         average_score: "0%",
@@ -1806,102 +1835,14 @@ app.get('/vetting-compliance-rate/company', async (req, res) => {
       });
     }
 
-    let company_scores = [];
-
-    // ===============================
-    // LOOP THROUGH OFFICES
-    // ===============================
-    for (const office of offices) {
-      const office_id = office.id;
-
-      // 1️⃣ GET ALL LOANS IN OFFICE
-      const [loans] = await pool.query(`
-        SELECT id, client_id, vetted_by, verified_by
-        FROM loans
-        WHERE office_id = ?
-      `, [office_id]);
-
-      const total_loans = loans.length;
-
-      if (total_loans === 0) continue;
-
-      let fully_documented_loans = 0;
-
-      // 2️⃣ CHECK DOCUMENTATION
-      for (const loan of loans) {
-        const client_id = loan.client_id;
-
-        const [identification] = await pool.query(`
-          SELECT id
-          FROM client_identifications
-          WHERE client_id = ?
-          LIMIT 1
-        `, [client_id]);
-
-        const [client] = await pool.query(`
-          SELECT picture
-          FROM clients
-          WHERE id = ?
-          LIMIT 1
-        `, [client_id]);
-
-        const [documents] = await pool.query(`
-          SELECT id
-          FROM documents
-          WHERE record_id = ?
-          LIMIT 1
-        `, [client_id]);
-
-        const [next_of_kin] = await pool.query(`
-          SELECT id
-          FROM client_next_of_kin
-          WHERE client_id = ?
-          LIMIT 1
-        `, [client_id]);
-
-        const hasIdentification = identification.length > 0;
-        const hasPicture = client.length > 0 && client[0].picture;
-        const hasDocuments = documents.length > 0;
-        const hasNextOfKin = next_of_kin.length > 0;
-        const vetted = loan.vetted_by !== null;
-        const verified = loan.verified_by !== null;
-
-        if (
-          hasIdentification &&
-          hasPicture &&
-          hasDocuments &&
-          hasNextOfKin &&
-          vetted &&
-          verified
-        ) {
-          fully_documented_loans++;
-        }
-      }
-
-      // 3️⃣ COMPLIANCE RATE
-      const compliance_rate = fully_documented_loans / total_loans;
-      const compliance_percent = compliance_rate * 100;
-
-      // 4️⃣ SCORE
-      let score = 0;
-      if (compliance_percent >= 80) {
-        score = compliance_percent;
-      }
-
-      company_scores.push(score);
-    }
-
-    // ===============================
-    // COMPANY AVERAGE
-    // ===============================
+    const offices_count = rows.length;
     const average_score =
-      company_scores.reduce((sum, score) => sum + score, 0) /
-      (company_scores.length || 1);
+      rows.reduce((sum, row) => sum + (Number(row.office_score) || 0), 0) / offices_count;
 
     const percentage_point = average_score * 0.10;
 
     return res.json({
-      offices_count: company_scores.length,
+      offices_count,
       average_score: average_score.toFixed(2) + "%",
       weight: "10%",
       percentage_point: percentage_point.toFixed(2)
@@ -4695,16 +4636,48 @@ app.get('/vetting-compliance-rate/province/:province_id', async (req, res) => {
       return res.status(400).json({ message: "province_id is required" });
     }
 
-    // ===============================
-    // GET ALL OFFICES IN PROVINCE
-    // ===============================
-    const [offices] = await pool.query(`
-      SELECT id
-      FROM offices
-      WHERE province_id = ?
+    const [rows] = await pool.query(`
+      SELECT 
+        x.office_id,
+        x.total_loans,
+        x.fully_documented_loans,
+        CASE
+          WHEN x.total_loans = 0 THEN 0
+          WHEN (x.fully_documented_loans / x.total_loans) * 100 >= 80
+            THEN (x.fully_documented_loans / x.total_loans) * 100
+          ELSE 0
+        END AS office_score
+      FROM (
+        SELECT 
+          l.office_id,
+          COUNT(DISTINCT l.id) AS total_loans,
+          COUNT(DISTINCT CASE
+            WHEN ci.client_id IS NOT NULL
+              AND c.picture IS NOT NULL
+              AND c.picture <> ''
+              AND d.record_id IS NOT NULL
+              AND nk.client_id IS NOT NULL
+              AND l.vetted_by IS NOT NULL
+              AND l.verified_by IS NOT NULL
+            THEN l.id
+          END) AS fully_documented_loans
+        FROM loans l
+        INNER JOIN offices o 
+          ON o.id = l.office_id
+        LEFT JOIN client_identifications ci 
+          ON ci.client_id = l.client_id
+        LEFT JOIN clients c 
+          ON c.id = l.client_id
+        LEFT JOIN documents d 
+          ON d.record_id = l.client_id
+        LEFT JOIN client_next_of_kin nk 
+          ON nk.client_id = l.client_id
+        WHERE o.province_id = ?
+        GROUP BY l.office_id
+      ) x
     `, [province_id]);
 
-    if (!offices.length) {
+    if (!rows.length) {
       return res.json({
         province_id,
         offices_count: 0,
@@ -4714,103 +4687,15 @@ app.get('/vetting-compliance-rate/province/:province_id', async (req, res) => {
       });
     }
 
-    let province_scores = [];
-
-    // ===============================
-    // LOOP THROUGH OFFICES
-    // ===============================
-    for (const office of offices) {
-      const office_id = office.id;
-
-      // 1️⃣ GET ALL LOANS IN OFFICE
-      const [loans] = await pool.query(`
-        SELECT id, client_id, vetted_by, verified_by
-        FROM loans
-        WHERE office_id = ?
-      `, [office_id]);
-
-      const total_loans = loans.length;
-
-      if (total_loans === 0) continue;
-
-      let fully_documented_loans = 0;
-
-      // 2️⃣ CHECK DOCUMENTATION
-      for (const loan of loans) {
-        const client_id = loan.client_id;
-
-        const [identification] = await pool.query(`
-          SELECT id
-          FROM client_identifications
-          WHERE client_id = ?
-          LIMIT 1
-        `, [client_id]);
-
-        const [client] = await pool.query(`
-          SELECT picture
-          FROM clients
-          WHERE id = ?
-          LIMIT 1
-        `, [client_id]);
-
-        const [documents] = await pool.query(`
-          SELECT id
-          FROM documents
-          WHERE record_id = ?
-          LIMIT 1
-        `, [client_id]);
-
-        const [next_of_kin] = await pool.query(`
-          SELECT id
-          FROM client_next_of_kin
-          WHERE client_id = ?
-          LIMIT 1
-        `, [client_id]);
-
-        const hasIdentification = identification.length > 0;
-        const hasPicture = client.length > 0 && client[0].picture;
-        const hasDocuments = documents.length > 0;
-        const hasNextOfKin = next_of_kin.length > 0;
-        const vetted = loan.vetted_by !== null;
-        const verified = loan.verified_by !== null;
-
-        if (
-          hasIdentification &&
-          hasPicture &&
-          hasDocuments &&
-          hasNextOfKin &&
-          vetted &&
-          verified
-        ) {
-          fully_documented_loans++;
-        }
-      }
-
-      // 3️⃣ COMPLIANCE RATE
-      const compliance_rate = fully_documented_loans / total_loans;
-      const compliance_percent = compliance_rate * 100;
-
-      // 4️⃣ SCORE
-      let score = 0;
-      if (compliance_percent >= 80) {
-        score = compliance_percent;
-      }
-
-      province_scores.push(score);
-    }
-
-    // ===============================
-    // PROVINCE AVERAGE
-    // ===============================
+    const offices_count = rows.length;
     const average_score =
-      province_scores.reduce((sum, score) => sum + score, 0) /
-      (province_scores.length || 1);
+      rows.reduce((sum, row) => sum + (Number(row.office_score) || 0), 0) / offices_count;
 
     const percentage_point = average_score * 0.10;
 
     return res.json({
       province_id,
-      offices_count: province_scores.length,
+      offices_count,
       average_score: average_score.toFixed(2) + "%",
       weight: "10%",
       percentage_point: percentage_point.toFixed(2)
