@@ -1795,6 +1795,10 @@ app.get('/vetting-compliance-rate/company', async (req, res) => {
         x.fully_documented_loans,
         CASE
           WHEN x.total_loans = 0 THEN 0
+          ELSE (x.fully_documented_loans / x.total_loans) * 100
+        END AS compliance_percent,
+        CASE
+          WHEN x.total_loans = 0 THEN 0
           WHEN (x.fully_documented_loans / x.total_loans) * 100 >= 80
             THEN (x.fully_documented_loans / x.total_loans) * 100
           ELSE 0
@@ -1814,14 +1818,20 @@ app.get('/vetting-compliance-rate/company', async (req, res) => {
             THEN l.id
           END) AS fully_documented_loans
         FROM loans l
-        LEFT JOIN client_identifications ci 
-          ON ci.client_id = l.client_id
+        LEFT JOIN (
+          SELECT DISTINCT client_id
+          FROM client_identifications
+        ) ci ON ci.client_id = l.client_id
         LEFT JOIN clients c 
           ON c.id = l.client_id
-        LEFT JOIN documents d 
-          ON d.record_id = l.client_id
-        LEFT JOIN client_next_of_kin nk 
-          ON nk.client_id = l.client_id
+        LEFT JOIN (
+          SELECT DISTINCT record_id
+          FROM documents
+        ) d ON d.record_id = l.client_id
+        LEFT JOIN (
+          SELECT DISTINCT client_id
+          FROM client_next_of_kin
+        ) nk ON nk.client_id = l.client_id
         GROUP BY l.office_id
       ) x
     `);
@@ -1843,6 +1853,7 @@ app.get('/vetting-compliance-rate/company', async (req, res) => {
 
     return res.json({
       offices_count,
+      office_breakdown: rows,
       average_score: average_score.toFixed(2) + "%",
       weight: "10%",
       percentage_point: percentage_point.toFixed(2)
