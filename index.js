@@ -4431,6 +4431,135 @@ app.get('/collection-efficiency/:office_id', async (req, res) => {
 });
 
 
+app.get('/vetting-compliance-rate/:office_id', async (req, res) => {
+  try {
+
+    const { office_id } = req.params;
+
+    if (!office_id) {
+      return res.status(400).json({ message: "office_id is required" });
+    }
+
+    // ===============================
+    // 1️⃣ GET ALL LOANS IN OFFICE
+    // ===============================
+    const [loans] = await pool.query(`
+      SELECT id, client_id, vetted_by, verified_by
+      FROM loans
+      WHERE office_id = ?
+    `, [office_id]);
+
+    const total_loans = loans.length;
+
+    if (total_loans === 0) {
+      return res.json({
+        office_id,
+        total_loans: 0,
+        fully_documented_loans: 0,
+        compliance_rate: "0%",
+        score: "0%",
+        percentage_point: 0
+      });
+    }
+
+    let fully_documented_loans = 0;
+
+    // ===============================
+    // 2️⃣ CHECK DOCUMENTATION
+    // ===============================
+    for (const loan of loans) {
+
+      const client_id = loan.client_id;
+
+      // client identification
+      const [identification] = await pool.query(`
+        SELECT id
+        FROM client_identification
+        WHERE client_id = ?
+        LIMIT 1
+      `, [client_id]);
+
+      // client picture
+      const [client] = await pool.query(`
+        SELECT picture
+        FROM clients
+        WHERE id = ?
+        LIMIT 1
+      `, [client_id]);
+
+      // client documents
+      const [documents] = await pool.query(`
+        SELECT id
+        FROM documents
+        WHERE record_id = ?
+        LIMIT 1
+      `, [client_id]);
+
+      // next of kin
+      const [next_of_kin] = await pool.query(`
+        SELECT id
+        FROM client_next_of_kin
+        WHERE client_id = ?
+        LIMIT 1
+      `, [client_id]);
+
+      const hasIdentification = identification.length > 0;
+      const hasPicture = client.length && client[0].picture;
+      const hasDocuments = documents.length > 0;
+      const hasNextOfKin = next_of_kin.length > 0;
+      const vetted = loan.vetted_by !== null;
+      const verified = loan.verified_by !== null;
+
+      if (
+        hasIdentification &&
+        hasPicture &&
+        hasDocuments &&
+        hasNextOfKin &&
+        vetted &&
+        verified
+      ) {
+        fully_documented_loans++;
+      }
+
+    }
+
+    // ===============================
+    // 3️⃣ COMPLIANCE RATE
+    // ===============================
+    const compliance_rate = fully_documented_loans / total_loans;
+    const compliance_percent = compliance_rate * 100;
+
+    // ===============================
+    // 4️⃣ SCORE
+    // ===============================
+    let score = 0;
+
+    if (compliance_percent >= 80) {
+      score = compliance_percent;
+    }
+
+    // ===============================
+    // 5️⃣ PP
+    // ===============================
+    const percentage_point = score * 0.10;
+
+    return res.json({
+      office_id,
+      total_loans,
+      fully_documented_loans,
+      compliance_rate: compliance_percent.toFixed(2) + "%",
+      score: score.toFixed(2) + "%",
+      weight: "10%",
+      percentage_point: percentage_point.toFixed(2)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
+
+
 //province
 
 app.get('/collection-efficiency/province/:province_id', async (req, res) => {
