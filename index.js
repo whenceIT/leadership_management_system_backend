@@ -7673,6 +7673,172 @@ app.get('/growth-trajectory/province/:province_id', async (req, res) => {
 });
 
 
+app.get('/office-cash-balance/:office_id', async (req, res) => {
+  try {
+
+    const { office_id } = req.params;
+
+    if (!office_id) {
+      return res.status(400).json({ message: "office_id is required" });
+    }
+
+    const startLimitDate = '2025-01-04';
+    const todaysDate = dayjs().format('YYYY-MM-DD');
+
+    // ===============================
+    // GET LAST LEDGER ENTRY
+    // ===============================
+    const [ledger] = await pool.query(`
+      SELECT cash_balance, total_income
+      FROM general_ledger
+      WHERE office_id = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `, [office_id]);
+
+    const recentLedgerEntry = ledger.length ? ledger[0] : null;
+
+    const openingBalance = recentLedgerEntry
+      ? Number(recentLedgerEntry.cash_balance)
+      : 0;
+
+    const totalIncome = recentLedgerEntry
+      ? Number(recentLedgerEntry.total_income)
+      : 0;
+
+    // ===============================
+    // ADVANCES GIVEN
+    // ===============================
+    const [advancesTotalResult] = await pool.query(`
+      SELECT SUM(amount) as total
+      FROM advances
+      WHERE office_id = ?
+      AND status IN ('approved','closed')
+      AND date_approved BETWEEN ? AND ?
+    `, [office_id, startLimitDate, todaysDate]);
+
+    const advancesTotal = Number(advancesTotalResult[0].total) || 0;
+
+    // ===============================
+    // ADVANCES PAID BACK
+    // ===============================
+    const [advancesPaidResult] = await pool.query(`
+      SELECT SUM(at.amount_paid) as total
+      FROM advance_transactions at
+      JOIN advances a ON a.id = at.advance_id
+      WHERE a.office_id = ?
+      AND at.last_update_date BETWEEN ? AND ?
+    `, [office_id, startLimitDate, todaysDate]);
+
+    const advancesTotalPaid = Number(advancesPaidResult[0].total) || 0;
+
+    // ===============================
+    // EXPENSES
+    // ===============================
+    const [expensesResult] = await pool.query(`
+      SELECT SUM(amount) as total
+      FROM expenses
+      WHERE office_id = ?
+      AND date BETWEEN ? AND ?
+    `, [office_id, startLimitDate, todaysDate]);
+
+    const expensesTotal = Number(expensesResult[0].total) || 0;
+
+    // ===============================
+    // DEPOSITS
+    // ===============================
+    const [depositsResult] = await pool.query(`
+      SELECT SUM(amount) as total
+      FROM deposits
+      WHERE office = ?
+      AND date BETWEEN ? AND ?
+    `, [office_id, startLimitDate, todaysDate]);
+
+    const depositsTotal = Number(depositsResult[0].total) || 0;
+
+    // ===============================
+    // FULL PAYMENTS
+    // ===============================
+    const [fullPaymentsResult] = await pool.query(`
+      SELECT SUM(credit) as total
+      FROM loan_transactions
+      WHERE office_id = ?
+      AND transaction_type = 'repayment'
+      AND payment_apply_to = 'full_payment'
+      AND date BETWEEN ? AND ?
+    `, [office_id, startLimitDate, todaysDate]);
+
+    const fullPaymentsTotal = Number(fullPaymentsResult[0].total) || 0;
+
+    // ===============================
+    // RELOAN PAYMENTS
+    // ===============================
+    const [reloanResult] = await pool.query(`
+      SELECT SUM(credit) as total
+      FROM loan_transactions
+      WHERE office_id = ?
+      AND payment_apply_to = 'reloan_payment'
+      AND date BETWEEN ? AND ?
+    `, [office_id, startLimitDate, todaysDate]);
+
+    const reloanedAmountTotal = Number(reloanResult[0].total) || 0;
+
+    // ===============================
+    // PART PAYMENTS
+    // ===============================
+    const [partPaymentResult] = await pool.query(`
+      SELECT SUM(credit) as total
+      FROM loan_transactions
+      WHERE office_id = ?
+      AND payment_apply_to = 'part_payment'
+      AND date BETWEEN ? AND ?
+    `, [office_id, startLimitDate, todaysDate]);
+
+    const partPaymentTotal = Number(partPaymentResult[0].total) || 0;
+
+    // ===============================
+    // NEW LOANS DISBURSED
+    // ===============================
+    const [newLoansResult] = await pool.query(`
+      SELECT SUM(debit) as total
+      FROM loan_transactions
+      WHERE office_id = ?
+      AND transaction_type = 'disbursement'
+      AND date BETWEEN ? AND ?
+    `, [office_id, startLimitDate, todaysDate]);
+
+    const newLoansTotal = Number(newLoansResult[0].total) || 0;
+
+    // ===============================
+    // CALCULATE NET CHANGE
+    // ===============================
+    const netChange =
+      fullPaymentsTotal +
+      reloanedAmountTotal +
+      partPaymentTotal +
+      advancesTotalPaid +
+      totalIncome -
+      (advancesTotal + expensesTotal + newLoansTotal + depositsTotal);
+
+    // ===============================
+    // CLOSING BALANCE
+    // ===============================
+    const closingBalance = openingBalance + netChange;
+
+    return res.json({
+      office_id,
+      opening_balance: openingBalance.toFixed(2),
+      net_change: netChange.toFixed(2),
+      closing_balance: closingBalance.toFixed(2)
+    });
+
+  } catch (error) {
+    console.error(error);
+    return res.sendStatus(500);
+  }
+});
+
+
 
 
 
