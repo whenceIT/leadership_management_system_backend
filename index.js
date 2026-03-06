@@ -4474,7 +4474,7 @@ app.get('/vetting-compliance-rate/:office_id', async (req, res) => {
       // client identification
       const [identification] = await pool.query(`
         SELECT id
-        FROM client_identification
+        FROM client_identifications
         WHERE client_id = ?
         LIMIT 1
       `, [client_id]);
