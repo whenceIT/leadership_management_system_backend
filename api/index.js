@@ -1,6 +1,5 @@
 // KPI Scores API - Index File
 // This file serves as the entry point for all KPI scores APIs
-
 const express = require('express');
 const router = express.Router();
 
