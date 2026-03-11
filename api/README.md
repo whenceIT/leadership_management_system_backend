@@ -395,6 +395,75 @@ Records the LCs at K50K+ Tier KPI score, calculated as percentage of loan consul
 
 Records the Branch Recovery Rate (Month-4) KPI score, calculated as collection rate after 4 months from disbursement.
 
+### 14. Get Office Users
+
+**GET /api/kpi-scores/office-users/:office_id**
+
+Retrieves all active users in a specific office by office_id.
+
+#### Response
+```json
+{
+  "success": true,
+  "office": {
+    "id": 1,
+    "name": "Lusaka Main Branch"
+  },
+  "count": 5,
+  "data": [
+    {
+      "id": 123,
+      "first_name": "John",
+      "last_name": "Doe",
+      "email": "john.doe@example.com",
+      "phone": "0977123456",
+      "status": "Active",
+      "designation": "Branch Manager",
+      "department": "Operations",
+      "employee_number": "EMP001",
+      "date_of_joining": "2022-01-15",
+      "office_id": 1,
+      "office_name": "Lusaka Main Branch"
+    },
+    ...
+  ]
+}
+```
+
+### 15. Get All Users (with optional office filter)
+
+**GET /api/kpi-scores/office-users**
+
+Retrieves all active users with office information. Can filter by office_id using query parameter.
+
+#### Query Parameters
+- `office_id` (optional): Filter users by office ID
+
+#### Response
+```json
+{
+  "success": true,
+  "count": 15,
+  "data": [
+    {
+      "id": 123,
+      "first_name": "John",
+      "last_name": "Doe",
+      "email": "john.doe@example.com",
+      "phone": "0977123456",
+      "status": "Active",
+      "designation": "Branch Manager",
+      "department": "Operations",
+      "employee_number": "EMP001",
+      "date_of_joining": "2022-01-15",
+      "office_id": 1,
+      "office_name": "Lusaka Main Branch"
+    },
+    ...
+  ]
+}
+```
+
 #### Request Body
 ```json
 {
