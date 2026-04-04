@@ -11,10 +11,10 @@ port: process.env.PORT,
 
 
 // const pool = mysql.createPool({
-//     host: '127.0.0.1',
+//     host: 'localhost',
 //     user: 'root',
 //     password:'',
-//     database: 'wdb',
+//     database: 'newdb',
 //     port: 3306,
 //     waitForConnections: true,
 //     connectionLimit: 10,

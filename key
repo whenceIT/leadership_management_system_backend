@@ -1,0 +1,4 @@
+Note: district level data from user->district_id, 
+loans->office->district_id,
+loan_transactions->office->district_id,
+clients->office->district_id
