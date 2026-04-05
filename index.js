@@ -340,14 +340,57 @@ app.get("/districts",async(req,res)=>{
 const kpiScoresRouter = require('./api');
 app.use('/api/kpi-scores', kpiScoresRouter);
 
-app.get("/offices",async(req,res)=>{
-    try{
-        const offices =  await pool.query(`SELECT * FROM offices`);
-        res.json(offices[0])
-    } catch(err){
-        console.log(err)
+app.get("/offices", async (req, res) => {
+    try {
+        const [offices] = await pool.query(`SELECT * FROM offices`);
+        res.json(offices);
+    } catch (err) {
+        console.error("Error fetching offices:", err);
+        res.status(500).json({ error: "Failed to fetch offices" });
     }
-})
+});
+
+app.get("/office-users/:office_id", async (req, res) => {
+    try {
+        const { office_id } = req.params;
+
+        // 1. Fetch users in the office
+        const [users] = await pool.query(`SELECT id, first_name, last_name, email, office_id, status FROM users WHERE office_id = ?`, [office_id]);
+
+        if (users.length === 0) {
+            return res.json([]);
+        }
+
+        // 2. For each user, fetch related data
+        const usersWithData = await Promise.all(users.map(async (user) => {
+            // Fetch clients linked to this user (staff_id)
+            const [clients] = await pool.query(`SELECT * FROM clients WHERE staff_id = ?`, [user.id]);
+
+            // Fetch loans linked to this user (loan_officer_id)
+            const [loans] = await pool.query(`SELECT * FROM loans WHERE loan_officer_id = ?`, [user.id]);
+
+            // Fetch transactions for these loans
+            const loansWithTransactions = await Promise.all(loans.map(async (loan) => {
+                const [transactions] = await pool.query(`SELECT * FROM loan_transactions WHERE loan_id = ?`, [loan.id]);
+                return {
+                    ...loan,
+                    loan_transactions: transactions
+                };
+            }));
+
+            return {
+                ...user,
+                clients: clients,
+                loans: loansWithTransactions
+            };
+        }));
+
+        res.json(usersWithData);
+    } catch (err) {
+        console.error("Error fetching office users data:", err);
+        res.status(500).json({ error: "Failed to fetch office users data" });
+    }
+});
 
 
 
