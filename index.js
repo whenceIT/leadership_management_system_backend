@@ -354,8 +354,13 @@ app.get("/office-users/:office_id", async (req, res) => {
     try {
         const { office_id } = req.params;
 
-        // 1. Fetch users in the office
-        const [users] = await pool.query(`SELECT id, first_name, last_name, email, office_id, status FROM users WHERE office_id = ?`, [office_id]);
+        // 1. Fetch users in the office with role_id = 4
+        const [users] = await pool.query(`
+            SELECT u.id, u.first_name, u.last_name, u.email, u.office_id, u.status 
+            FROM users u 
+            INNER JOIN role_users ru ON u.id = ru.user_id 
+            WHERE u.office_id = ? AND ru.role_id = 4
+        `, [office_id]);
 
         if (users.length === 0) {
             return res.json([]);
