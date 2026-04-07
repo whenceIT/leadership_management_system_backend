@@ -359,7 +359,7 @@ app.get("/office-users/:office_id", async (req, res) => {
             SELECT u.id, u.first_name, u.last_name, u.email, u.office_id, u.status 
             FROM users u 
             INNER JOIN role_users ru ON u.id = ru.user_id 
-            WHERE u.office_id = ? AND ru.role_id = 4
+            WHERE u.office_id = ? AND ru.role_id = 3
         `, [office_id]);
 
         if (users.length === 0) {
