@@ -328,7 +328,7 @@ app.get("/loan/:id", async (req, res) => {
 app.get("/districts",async(req,res)=>{
 
     try{
-        const districts =  await pool.query(`SELECT * FROM districts`);
+        const districts =  await pool.query(`SELECT DISTINCT d.* FROM districts d INNER JOIN offices o ON d.id = o.district_id`);
         res.json(districts[0])
     } catch(err){
         console.log(err)
