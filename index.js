@@ -10669,7 +10669,7 @@ app.get('/below-threshold-risk/:office_id', async (req, res) => {
 
 async function calculateCashMetricsForOffice(office_id) {
   const startLimitDate = '2025-01-04';
-  const todaysDate = dayjs().format('YYYY-MM-DD');
+  const todaysDate = new Date().toJSON().slice(0, 10);
 
   // ===============================
   // GET LAST LEDGER ENTRY
