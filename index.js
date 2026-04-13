@@ -10795,16 +10795,17 @@ async function calculateCashMetricsForOffice(office_id) {
 
   const newLoansTotal = Number(newLoans.total) || 0;
 
-  // ===============================
-  // NET CHANGE
-  // ===============================
-  const netChange =
-    fullPaymentsTotal +
-    reloanedAmountTotal +
-    partPaymentTotal +
-    advancesTotalPaid +
-    totalIncome -
-    (advancesTotal + expensesTotal + newLoansTotal + depositsTotal);
+   // ===============================
+   // NET CHANGE
+   // ===============================
+   const netChange =
+     fullPaymentsTotal +
+     reloanedAmountTotal +
+     partPaymentTotal +
+     advancesTotalPaid +
+     totalIncome +
+     depositsTotal -
+     (advancesTotal + expensesTotal + newLoansTotal);
 
   const closingBalance = openingBalance + netChange;
 
