@@ -5,18 +5,13 @@ const pool = require('../db');
 /**
  * @route GET /api/summary
  * @desc Get financial summary report
- * @query {string} start_date - Optional start date (YYYY-MM-DD)
- * @query {string} end_date - Optional end date (YYYY-MM-DD)
- * @query {number} office_id - Optional office ID to filter results for a specific office
- * @query {number} province_id - Optional province ID to filter results for offices in a specific province
- * @query {number} district_id - Optional district ID to filter results for offices in a specific district
  * @access Public
  */
-router.get('/', async (req, res) => {
+router.get('/test', async (req, res) => {
   try {
     const todaysDate = new Date().toISOString().split('T')[0];
     const startLimitDate = '2025-01-04';
-    const { start_date, end_date, office_id, province_id, district_id } = req.query;
+    const { start_date, end_date } = req.query;
 
     let startDate = start_date || startLimitDate;
     let endDate = end_date || todaysDate;
@@ -41,20 +36,8 @@ router.get('/', async (req, res) => {
     );
     const totalIncome = parseFloat(incomeResult[0].total_income || 0);
 
-    // Get offices (all or specific)
-    let officesQuery = 'SELECT * FROM offices';
-    let officesParams = [];
-    if (office_id) {
-      officesQuery += ' WHERE id = ?';
-      officesParams = [office_id];
-    } else if (province_id) {
-      officesQuery += ' WHERE province_id = ?';
-      officesParams = [province_id];
-    } else if (district_id) {
-      officesQuery += ' WHERE district_id = ?';
-      officesParams = [district_id];
-    }
-    const [officesResult] = await pool.query(officesQuery, officesParams);
+    // Get all offices
+    const [officesResult] = await pool.query('SELECT * FROM offices');
 
     for (const office of officesResult) {
       // Closing balance calculation for each office (transactions from start limit date to today)

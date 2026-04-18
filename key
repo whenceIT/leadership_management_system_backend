@@ -1,3 +1,26 @@
+GET /api/kpi-scores/summary
+
+Query parameters (all optional):
+
+start_date: YYYY-MM-DD (defaults to 2025-01-04 if not provided)
+end_date: YYYY-MM-DD (defaults to today's date)
+office_id: number (filter for specific office)
+province_id: number (filter for offices in specific province)
+Examples:
+
+All offices, default dates: GET /api/kpi-scores/summary
+Specific office: GET /api/kpi-scores/summary?office_id=1
+Province filter: GET /api/kpi-scores/summary?province_id=2
+Custom dates: GET /api/kpi-scores/summary?start_date=2025-01-01&end_date=2025-12-31
+Office with custom dates: GET /api/kpi-scores/summary?office_id=1&start_date=2025-01-01&end_date=2025-12-31
+Response format: { "success": true, "data": { "totalCashBalance": 12345.67, "totalIncome": 1000.00, "totalAdvances": 500.00, // ... other totals "startDate": "2025-01-01", "endDate": "2025-12-31" } }
+
+
+
+
+
+
+
 Note: district level data from user->district_id, 
 loans->office->district_id,
 loan_transactions->office->district_id,
