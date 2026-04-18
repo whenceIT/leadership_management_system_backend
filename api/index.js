@@ -10,6 +10,7 @@ const month1DefaultRateRouter = require('./branch/month1DefaultRate');
 const lcsAtK50KTierRouter = require('./branch/lcsAtK50KTier');
 const branchNetContributionRouter = require('./branch/branchNetContribution');
 const branchRecoveryRateMonth4Router = require('./branch/branchRecoveryRateMonth4');
+const summaryRouter = require('./summary');
 
 // Mount routers
 router.use('/', kpiScoresRouter);
@@ -18,5 +19,6 @@ router.use('/month1-default-rate', month1DefaultRateRouter);
 router.use('/lcs-at-k50k-tier', lcsAtK50KTierRouter);
 router.use('/branch-net-contribution', branchNetContributionRouter);
 router.use('/branch-recovery-rate-month4', branchRecoveryRateMonth4Router);
+router.use('/summary', summaryRouter);
 
 module.exports = router;
