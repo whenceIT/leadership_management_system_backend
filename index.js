@@ -10957,36 +10957,74 @@ app.get('/cash-position-score/company', async (req, res) => {
       });
     }
 
-    let scores = [];
+    let branchMetrics = [];
 
     for (const office of offices) {
       const { closingBalance } = await calculateCashMetricsForOffice(office.id);
 
-      let score = 0;
-
+      // Cash Position Score (40%)
+      let cashPosScore = 0;
       if (closingBalance >= 20000 && closingBalance <= 30000) {
-        score = 100;
+        cashPosScore = 100;
       } else if (closingBalance > 30000 && closingBalance <= 50000) {
-        score = 100 - ((closingBalance - 30000) / 20000) * 40;
+        const excess = closingBalance - 30000;
+        const penalty = (excess / 20000) * 40;
+        cashPosScore = 100 - penalty;
       } else if (closingBalance >= 10000 && closingBalance < 20000) {
-        score = 100 - ((20000 - closingBalance) / 10000) * 50;
+        const shortfall = 20000 - closingBalance;
+        const penalty = (shortfall / 10000) * 50;
+        cashPosScore = 100 - penalty;
       } else {
-        score = 0;
+        cashPosScore = 0;
+      }
+      if (cashPosScore < 0) cashPosScore = 0;
+
+      // Above-Threshold Risk (30%)
+      // Assuming no approval system yet, so all excess is unapproved
+      let aboveRiskScore = 100;
+      if (closingBalance > 30000) {
+        const excess = closingBalance - 30000;
+        const unapprovedRatio = excess / closingBalance;
+        aboveRiskScore = 100 * (1 - unapprovedRatio);
       }
 
-      if (score < 0) score = 0;
+      // Below-Threshold Risk (20%)
+      let belowRiskScore = 100;
+      if (closingBalance < 20000) {
+        belowRiskScore = (closingBalance / 20000) * 100;
+        if (belowRiskScore > 100) belowRiskScore = 100;
+      }
 
-      scores.push(score);
+      // Approved Exception Ratio (10%)
+      // Assuming no approvals, so if excess >0, score=0, else 100
+      let approvalRatioScore = 100;
+      if (closingBalance > 30000) {
+        approvalRatioScore = 0;
+      }
+
+      branchMetrics.push({
+        cashPos: cashPosScore,
+        above: aboveRiskScore,
+        below: belowRiskScore,
+        approval: approvalRatioScore
+      });
     }
 
-    const average_score =
-      scores.reduce((sum, score) => sum + score, 0) / (scores.length || 1);
+    // Calculate averages
+    const avgCashPos = branchMetrics.reduce((sum, m) => sum + m.cashPos, 0) / branchMetrics.length;
+    const avgAbove = branchMetrics.reduce((sum, m) => sum + m.above, 0) / branchMetrics.length;
+    const avgBelow = branchMetrics.reduce((sum, m) => sum + m.below, 0) / branchMetrics.length;
+    const avgApproval = branchMetrics.reduce((sum, m) => sum + m.approval, 0) / branchMetrics.length;
 
-    const pp = average_score * 0.40;
+    // CLMI = weighted average
+    const clmi = avgCashPos * 0.4 + avgAbove * 0.3 + avgBelow * 0.2 + avgApproval * 0.1;
+
+    // Percentage points = cash position contribution
+    const pp = avgCashPos * 0.4;
 
     res.json({
-      offices_count: scores.length,
-      average_score: average_score.toFixed(2),
+      offices_count: branchMetrics.length,
+      average_score: clmi.toFixed(2),
       percentage_points: pp.toFixed(2)
     });
 
