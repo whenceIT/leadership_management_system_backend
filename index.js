@@ -14012,7 +14012,7 @@ app.get('/branch-collection-waterfall', async (req, res) => {
                         fees: parseFloat(dueResult[0].fees_due) || 0,
                         penalty: parseFloat(dueResult[0].penalty_due) || 0
                     },
-                    loans_count: dueResult[0].loans_with_due,
+                    loans_count: dueResult[0].loans_with_due,P
                     installments_count: dueResult[0].total_installments
                 },
                 collected: {

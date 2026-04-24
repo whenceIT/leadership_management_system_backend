@@ -10,13 +10,14 @@ const pool = require('../db');
  * @query {number} office_id - Optional office ID to filter results for a specific office
  * @query {number} province_id - Optional province ID to filter results for offices in a specific province
  * @query {number} district_id - Optional district ID to filter results for offices in a specific district
+ * @query {number} approved_excess - Optional approved excess amount above K30,000
  * @access Public
  */
 router.get('/', async (req, res) => {
   try {
     const todaysDate = new Date().toISOString().split('T')[0];
     const startLimitDate = '2025-01-04';
-    const { start_date, end_date, office_id, province_id, district_id } = req.query;
+    const { start_date, end_date, office_id, province_id, district_id, approved_excess } = req.query;
 
     let startDate = start_date || startLimitDate;
     let endDate = end_date || todaysDate;
@@ -55,6 +56,12 @@ router.get('/', async (req, res) => {
       officesParams = [district_id];
     }
     const [officesResult] = await pool.query(officesQuery, officesParams);
+
+    // Constants for cash position thresholds
+    const UPPER_THRESHOLD = 30000; // K30,000
+    const LOWER_THRESHOLD = 20000; // K20,000
+    const IDEAL_MIN = 20000;       // K20,000
+    const IDEAL_MAX = 30000;       // K30,000
 
     for (const office of officesResult) {
       // Closing balance calculation for each office (transactions from start limit date to today)
@@ -177,6 +184,15 @@ router.get('/', async (req, res) => {
 
     totalCashBalance += totalIncome;
 
+    // Calculate excess amounts based on cash position thresholds
+    const totalExcessAmount = totalCashBalance > UPPER_THRESHOLD 
+      ? totalCashBalance - UPPER_THRESHOLD 
+      : 0;
+    
+    const userApprovedExcess = approved_excess ? parseFloat(approved_excess) : 0;
+    const approvedExcessAmount = Math.min(userApprovedExcess, totalExcessAmount);
+    const unapprovedExcessAmount = totalExcessAmount - approvedExcessAmount;
+
     res.json({
       success: true,
       data: {
@@ -190,7 +206,11 @@ router.get('/', async (req, res) => {
         totalPartPayment,
         totalNewLoans,
         startDate,
-        endDate
+        endDate,
+        // New excess amount metrics
+        approvedExcessAmount,
+        unapprovedExcessAmount,
+        totalExcessAmount
       }
     });
 
