@@ -28,7 +28,7 @@ app.get("/health", async (req, res) => {
 app.post("/sign-in",async(req,res)=>{
     try{
         const {email,password} = req.body;
-        const user = await pool.query(`SELECT * FROM users WHERE email = ? `,[email])
+        const user = await pool.query(`SELECT * FROM users WHERE email = ? AND status = 'active' `,[email])
         const userPassword =  user[0][0].password
         console.log(userPassword)
         const finalPassword = userPassword.replace("$2y$", "$2b$")
@@ -52,7 +52,7 @@ app.post("/sign-in",async(req,res)=>{
       const { email } = req.params;
   
       // Get the user by email
-      const userResult = await pool.query(`SELECT * FROM users WHERE email = ?`, [email]);
+      const userResult = await pool.query(`SELECT * FROM users WHERE email = ? AND status = 'active'`, [email]);
       const user = userResult[0][0];
   
       if (!user) {
@@ -342,7 +342,7 @@ app.use('/api/kpi-scores', kpiScoresRouter);
 
 app.get("/offices", async (req, res) => {
     try {
-        const [offices] = await pool.query(`SELECT * FROM offices`);
+        const [offices] = await pool.query(`SELECT * FROM offices WHERE id != 67`);
         res.json(offices);
     } catch (err) {
         console.error("Error fetching offices:", err);
@@ -359,7 +359,7 @@ app.get("/office-users/:office_id", async (req, res) => {
             SELECT u.id, u.first_name, u.last_name, u.email, u.office_id, u.status 
             FROM users u 
             INNER JOIN role_users ru ON u.id = ru.user_id 
-            WHERE u.office_id = ? AND ru.role_id = 3
+            WHERE u.office_id = ? AND ru.role_id = 3 AND u.status = 'active'
         `, [office_id]);
 
         if (users.length === 0) {
@@ -508,7 +508,7 @@ app.get("/staff", async (req, res) => {
     try {
         const { office_id, province_id } = req.query;
 
-        let query = `SELECT * FROM users WHERE status = 'Active'`;
+        let query = `SELECT * FROM users WHERE status = 'active'`;
         let values = [];
 
         // Filter by office_id if provided
@@ -536,7 +536,7 @@ app.get("/staffbyPosition", async (req, res) => {
     try {
         const { position_id, office_id, province_id } = req.query;
 
-        let query = `SELECT * FROM users WHERE status = 'Active'`;
+        let query = `SELECT * FROM users WHERE status = 'active'`;
         let values = [];
 
         // Filter by position_id if provided
@@ -576,7 +576,7 @@ app.get("/branch-stats", async (req, res) => {
 
         // Total staff (active users)
         const [totalStaffResult] = await pool.query(
-            `SELECT COUNT(*) as count FROM users WHERE office_id = ? AND status = 'Active'`,
+            `SELECT COUNT(*) as count FROM users WHERE office_id = ? AND status = 'active'`,
             [office_id]
         );
 
@@ -1132,7 +1132,7 @@ app.post('/smart-alerts/mark-all-read', async (req, res) => {
 // HELPERS (used by all 18 company endpoints)
 // =======================================================
 async function getAllOffices(pool) {
-  const [offices] = await pool.query(`SELECT id FROM offices`);
+  const [offices] = await pool.query(`SELECT id FROM offices WHERE id != 67`);
   return offices; // [{id}, ...]
 }
 
@@ -1168,6 +1168,7 @@ app.get("/staff-adequacy/company", async (req, res) => {
         FROM users u
         INNER JOIN role_users ur ON ur.user_id = u.id
         WHERE ur.role_id = 3
+        AND u.status = 'active'
         AND u.office_id = ?
       `,
         [office_id]
@@ -1227,6 +1228,7 @@ app.get("/productivity-achievement/company", async (req, res) => {
         JOIN role_users ru ON ru.user_id = u.id
         LEFT JOIN cycle_dates cd ON cd.loan_officer_id = u.id
         WHERE ru.role_id = 3
+          AND u.status = 'active'
           AND u.office_id = ?
       `,
         [office_id]
@@ -1358,6 +1360,7 @@ app.get("/vacancy-impact/company", async (req, res) => {
         FROM users u
         INNER JOIN role_users ur ON ur.user_id = u.id
         WHERE ur.role_id = 3
+        AND u.status = 'active'
         AND u.office_id = ?
       `,
         [office_id]
@@ -1455,6 +1458,7 @@ app.get("/portfolio-load-balance/company", async (req, res) => {
         FROM users u
         JOIN role_users ru ON ru.user_id = u.id
         WHERE ru.role_id = 3
+        AND u.status = 'active'
         AND u.office_id = ?
       `,
         [office_id]
@@ -1528,6 +1532,7 @@ app.get("/volume-achievement/company", async (req, res) => {
         JOIN role_users ru ON ru.user_id = u.id
         LEFT JOIN cycle_dates cd ON cd.loan_officer_id = u.id
         WHERE ru.role_id = 3
+          AND u.status = 'active'
           AND u.office_id = ?
       `,
         [office_id]
@@ -1751,6 +1756,7 @@ app.get("/collection-efficiency/company", async (req, res) => {
         JOIN role_users ru ON ru.user_id = u.id
         LEFT JOIN cycle_dates cd ON cd.loan_officer_id = u.id
         WHERE ru.role_id = 3
+          AND u.status = 'active'
           AND u.office_id = ?
       `,
         [office_id]
@@ -1958,6 +1964,7 @@ app.get("/yield-achievement/company", async (req, res) => {
         JOIN role_users ru ON ru.user_id = u.id
         LEFT JOIN cycle_dates cd ON cd.loan_officer_id = u.id
         WHERE ru.role_id = 3
+          AND u.status = 'active'
           AND u.office_id = ?
       `,
         [office_id]
@@ -2140,6 +2147,7 @@ app.get("/product-risk-score/company", async (req, res) => {
         FROM users u
         JOIN role_users ru ON ru.user_id = u.id
         WHERE ru.role_id = 3
+          AND u.status = 'active'
           AND u.office_id = ?
       `,
         [office_id]
@@ -2244,6 +2252,7 @@ app.get("/month-1-default-performance/company", async (req, res) => {
         FROM users u
         JOIN role_users ru ON ru.user_id = u.id
         WHERE ru.role_id = 3
+          AND u.status = 'active'
           AND u.office_id = ?
       `,
         [office_id]
@@ -2365,6 +2374,7 @@ app.get("/3-month-recovery-achievement/company", async (req, res) => {
         FROM users u
         JOIN role_users ru ON ru.user_id = u.id
         WHERE ru.role_id = 3
+          AND u.status = 'active'
           AND u.office_id = ?
       `,
         [office_id]
@@ -2573,6 +2583,7 @@ app.get("/long-term-delinquency-risk/company", async (req, res) => {
         FROM users u
         JOIN role_users ru ON ru.user_id = u.id
         WHERE ru.role_id = 3
+          AND u.status = 'active'
           AND u.office_id = ?
       `,
         [office_id]
@@ -2700,6 +2711,7 @@ app.get("/revenue-achievement/company", async (req, res) => {
         FROM users u
         JOIN role_users ru ON ru.user_id = u.id
         WHERE ru.role_id = 3
+          AND u.status = 'active'
           AND u.office_id = ?
       `,
         [office_id]
@@ -2811,6 +2823,7 @@ app.get("/efficiency-ratio/company", async (req, res) => {
         FROM users u
         JOIN role_users ru ON ru.user_id = u.id
         WHERE ru.role_id = 3
+          AND u.status = 'active'
           AND u.office_id = ?
       `,
         [office_id]
@@ -3118,6 +3131,7 @@ app.get("/staff-adequacy/:id", async (req, res) => {
       FROM users u
       INNER JOIN role_users ur ON ur.user_id = u.id
       WHERE ur.role_id = 3
+      AND u.status = 'active'
       AND u.office_id = ?
     `, [id]);
 
@@ -3274,6 +3288,7 @@ app.get('/productivity-achievement/:office_id', async (req, res) => {
       JOIN role_users ru ON ru.user_id = u.id
       LEFT JOIN cycle_dates cd ON cd.loan_officer_id = u.id
       WHERE ru.role_id = 3
+        AND u.status = 'active'
         AND u.office_id = ?
     `, [office_id]);
 
@@ -3441,6 +3456,7 @@ app.get('/productivity-achievement/province/:province_id', async (req, res) => {
         JOIN role_users ru ON ru.user_id = u.id
         LEFT JOIN cycle_dates cd ON cd.loan_officer_id = u.id
         WHERE ru.role_id = 3
+          AND u.status = 'active'
           AND u.office_id = ?
       `, [office_id]);
 
@@ -3610,6 +3626,7 @@ app.get('/productivity-achievement/district/:district_id', async (req, res) => {
         JOIN role_users ru ON ru.user_id = u.id
         LEFT JOIN cycle_dates cd ON cd.loan_officer_id = u.id
         WHERE ru.role_id = 3
+          AND u.status = 'active'
           AND u.office_id = ?
       `, [office_id]);
 
@@ -3740,6 +3757,7 @@ app.get("/vacancy-impact/:office_id", async (req, res) => {
       FROM users u
       INNER JOIN role_users ur ON ur.user_id = u.id
       WHERE ur.role_id = 3
+      AND u.status = 'active'
       AND u.office_id = ?
     `, [office_id]);
 
@@ -3820,6 +3838,7 @@ app.get("/vacancy-impact/province/:province_id", async (req, res) => {
         FROM users u
         INNER JOIN role_users ur ON ur.user_id = u.id
         WHERE ur.role_id = 3
+        AND u.status = 'active'
         AND u.office_id = ?
       `, [office_id]);
 
@@ -10947,6 +10966,7 @@ app.get('/cash-position-score/company', async (req, res) => {
     const [offices] = await pool.query(`
       SELECT id
       FROM offices
+      WHERE id != 67
     `);
 
     if (!offices.length) {
@@ -11161,6 +11181,7 @@ app.get('/above-threshold-risk/company', async (req, res) => {
     const [offices] = await pool.query(`
       SELECT id
       FROM offices
+      WHERE id != 67
     `);
 
     if (!offices.length) {
@@ -11334,6 +11355,7 @@ app.get('/below-threshold-risk/company', async (req, res) => {
     const [offices] = await pool.query(`
       SELECT id
       FROM offices
+      WHERE id != 67
     `);
 
     if (!offices.length) {
@@ -11525,7 +11547,7 @@ app.get('/user-tiers/:userId', async (req, res) => {
 async function assignInitialTier(userId, res) {
     try {
         // Check if user exists
-        const [userResult] = await pool.query('SELECT * FROM users WHERE id = ?', [userId]);
+        const [userResult] = await pool.query("SELECT * FROM users WHERE id = ? AND status = 'active'", [userId]);
         
         if (userResult.length === 0) {
             return res.status(404).json({
@@ -12563,7 +12585,7 @@ app.get('/province-branches-performance', async (req, res) => {
                 o.manager_id,
                 CONCAT(u.first_name, ' ', u.last_name) AS manager_name,
                 o.active,
-                (SELECT COUNT(*) FROM users WHERE office_id = o.id AND status = 'Active') AS staff_count
+                (SELECT COUNT(*) FROM users WHERE office_id = o.id AND status = 'active') AS staff_count
             FROM offices o
             LEFT JOIN users u ON o.manager_id = u.id
             WHERE o.province_id = ?
@@ -12874,7 +12896,7 @@ app.get('/monthly-disbursement', async (req, res) => {
         // If only user_id is provided, get the user's office_id
         if (!office_id && user_id) {
             const [userResult] = await pool.query(`
-                SELECT office_id FROM users WHERE id = ?
+                SELECT office_id FROM users WHERE id = ? AND status = 'active'
             `, [user_id]);
             
             if (userResult.length === 0) {
