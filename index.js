@@ -342,7 +342,7 @@ app.use('/api/kpi-scores', kpiScoresRouter);
 
 app.get("/offices", async (req, res) => {
     try {
-        const [offices] = await pool.query(`SELECT * FROM offices WHERE id != 67`);
+        const [offices] = await pool.query(`SELECT o.*, (SELECT COUNT(*) FROM users WHERE office_id = o.id AND status = 'Active') as user_count FROM offices o WHERE o.id != 67`);
         res.json(offices);
     } catch (err) {
         console.error("Error fetching offices:", err);
