@@ -354,7 +354,7 @@ app.get("/office-users/:office_id", async (req, res) => {
     try {
         const { office_id } = req.params;
 
-        // 1. Fetch users in the office with role_id = 4
+        // 1. Fetch users in the office with role_id = 3 
         const [users] = await pool.query(`
             SELECT u.id, u.first_name, u.last_name, u.email, u.office_id, u.status 
             FROM users u 
@@ -362,8 +362,24 @@ app.get("/office-users/:office_id", async (req, res) => {
             WHERE u.office_id = ? AND ru.role_id = 3 AND u.status = 'active'
         `, [office_id]);
 
+        // 2. Fetch manager_users (role not 3 or 2)
+        const [managerUsers] = await pool.query(`
+            SELECT u.id, u.first_name, u.last_name, u.email, u.office_id, u.status 
+            FROM users u 
+            INNER JOIN role_users ru ON u.id = ru.user_id 
+            WHERE u.office_id = ? AND ru.role_id NOT IN (2, 3) AND u.status = 'active'
+        `, [office_id]);
+
+        // 3. Fetch referral_users (role_id = 11)
+        const [referralUsers] = await pool.query(`
+            SELECT u.id, u.first_name, u.last_name, u.email, u.office_id, u.status 
+            FROM users u 
+            INNER JOIN role_users ru ON u.id = ru.user_id 
+            WHERE u.office_id = ? AND ru.role_id = 11 AND u.status = 'active'
+        `, [office_id]);
+
         if (users.length === 0) {
-            return res.json([]);
+            return res.json({ users: [], manager_users: managerUsers, referral_users: referralUsers });
         }
 
         // 2. For each user, fetch related data
@@ -390,7 +406,11 @@ app.get("/office-users/:office_id", async (req, res) => {
             };
         }));
 
-        res.json(usersWithData);
+        res.json({
+            users: usersWithData,
+            manager_users: managerUsers,
+            referral_users: referralUsers
+        });
     } catch (err) {
         console.error("Error fetching office users data:", err);
         res.status(500).json({ error: "Failed to fetch office users data" });
