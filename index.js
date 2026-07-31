@@ -3180,6 +3180,14 @@ app.get("/staff-adequacy/province/:province_id", async (req, res) => {
       GROUP BY o.id
     `, [province_id]);
 
+    const [totalStaffRows] = await pool.query(`
+      SELECT COUNT(*) AS total_staff
+      FROM users
+      WHERE office_id IN (SELECT id FROM offices WHERE province_id = ?) AND status = 'Active'
+    `, [province_id]);
+
+    const total_staff = totalStaffRows[0]?.total_staff || 0;
+
     let officeScores = [];
 
     rows.forEach(row => {
@@ -3203,6 +3211,7 @@ app.get("/staff-adequacy/province/:province_id", async (req, res) => {
     res.json({
       province_id,
       offices_count: officeScores.length,
+      total_staff,
       average_normalized_score: province_average,
       weight: "25%",
       percentage_point: PercentagePoint
