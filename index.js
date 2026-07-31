@@ -382,32 +382,8 @@ app.get("/office-users/:office_id", async (req, res) => {
             return res.json({ users: [], manager_users: managerUsers, referral_users: referralUsers });
         }
 
-        // 2. For each user, fetch related data
-        const usersWithData = await Promise.all(users.map(async (user) => {
-            // Fetch clients linked to this user (staff_id)
-            const [clients] = await pool.query(`SELECT * FROM clients WHERE staff_id = ?`, [user.id]);
-
-            // Fetch loans linked to this user (loan_officer_id)
-            const [loans] = await pool.query(`SELECT * FROM loans WHERE loan_officer_id = ?`, [user.id]);
-
-            // Fetch transactions for these loans
-            const loansWithTransactions = await Promise.all(loans.map(async (loan) => {
-                const [transactions] = await pool.query(`SELECT * FROM loan_transactions WHERE loan_id = ?`, [loan.id]);
-                return {
-                    ...loan,
-                    loan_transactions: transactions
-                };
-            }));
-
-            return {
-                ...user,
-                clients: clients,
-                loans: loansWithTransactions
-            };
-        }));
-
         res.json({
-            users: usersWithData,
+            users,
             manager_users: managerUsers,
             referral_users: referralUsers
         });
