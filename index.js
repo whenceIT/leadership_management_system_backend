@@ -3135,7 +3135,14 @@ app.get("/staff-adequacy/:id", async (req, res) => {
       AND u.office_id = ?
     `, [id]);
 
+    const [staffRows] = await pool.query(`
+      SELECT COUNT(*) AS total_staff
+      FROM users
+      WHERE office_id = ? AND status = 'Active'
+    `, [id]);
+
     const ActualLCs = rows[0].total;
+    const total_staff = staffRows[0]?.total_staff || 0;
 
     // Normalized Score = (Actual LCs ÷ 10) × 100
     let normalized_score = (ActualLCs / 10) * 100;
@@ -3151,6 +3158,7 @@ app.get("/staff-adequacy/:id", async (req, res) => {
     res.json({
       office_id: id,
       actual_lcs: ActualLCs,
+      total_staff,
       normalized_score,
       weight: "25%",
       percentage_point: PercentagePoint
@@ -3241,6 +3249,14 @@ app.get("/staff-adequacy/district/:district_id", async (req, res) => {
       GROUP BY o.id
     `, [district_id]);
 
+    const [totalStaffRows] = await pool.query(`
+      SELECT COUNT(*) AS total_staff
+      FROM users
+      WHERE office_id IN (SELECT id FROM offices WHERE district_id = ?) AND status = 'Active'
+    `, [district_id]);
+
+    const total_staff = totalStaffRows[0]?.total_staff || 0;
+
     let DistrictScores = [];
 
     rows.forEach(row => {
@@ -3264,6 +3280,7 @@ app.get("/staff-adequacy/district/:district_id", async (req, res) => {
     res.json({
       district_id,
       offices_count: DistrictScores.length,
+      total_staff,
       average_normalized_score: district_average,
       weight: "25%",
       percentage_point: PercentagePoint
