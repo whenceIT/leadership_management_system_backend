@@ -18,6 +18,16 @@ const pool = require('../../db');
 
 // Helper function to calculate Net Cash Position for a single office
 async function calculateNetCashPositionForOffice(officeId, startDate, endDate) {
+  // Get office info including workstations
+  const [officeInfo] = await pool.query(
+    'SELECT name, branch_capacity FROM offices WHERE id = ?',
+    [officeId]
+  );
+  
+  const workstations = officeInfo.length > 0 ? (officeInfo[0].branch_capacity || 0) : 0;
+  const loanTargetPerWorkstation = 40000;
+  const minimumLoanTarget = workstations * loanTargetPerWorkstation;
+
   // 1. Amount Disbursed - Sum of principal for disbursed loans
   const [disbursedResult] = await pool.query(`
     SELECT COALESCE(SUM(principal), 0) AS total_disbursed
@@ -27,72 +37,110 @@ async function calculateNetCashPositionForOffice(officeId, startDate, endDate) {
   `, [officeId, startDate, endDate]);
   const amountDisbursed = parseFloat(disbursedResult[0].total_disbursed) || 0;
 
-  // 2. Defaults (uncollected amounts) - written off loans principal
+  // 2. Defaults (uncollected amounts) - loans with overdue repayments
   const [defaultsResult] = await pool.query(`
+    SELECT COALESCE(SUM(t.total_defaults), 0) AS total_defaults
+    FROM loans l
+    JOIN (
       SELECT
-          COALESCE(SUM(t.outstanding_balance), 0) AS total_defaults
-      FROM loans l
-      JOIN (
-          SELECT
-              loan_id,
-              SUM(debit) - SUM(credit) AS total_defaults
-          FROM loan_transactions
-            AND status = 'disbursed'
-          GROUP BY loan_id
-      ) t ON l.id = t.loan_id
-      WHERE l.office_id = ?
-        AND l.status = 'disbursed'
-        AND l.first_repayment_date < CURDATE()
-        AND t.total_defaults > 0
-        AND l.created_at BETWEEN ? AND ?
+        loan_id,
+        SUM(debit) - SUM(credit) AS total_defaults
+      FROM loan_transactions
+      WHERE status = 'approved'
+      GROUP BY loan_id
+    ) t ON l.id = t.loan_id
+    WHERE l.office_id = ?
+      AND l.status = 'disbursed'
+      AND l.first_repayment_date < CURDATE()
+      AND t.total_defaults > 0
+      AND l.disbursement_date BETWEEN ? AND ?
   `, [officeId, startDate, endDate]);
   const defaults = parseFloat(defaultsResult[0].total_defaults) || 0;
 
   // 3. Mandatory Fixed Costs (Admin + Building + Statutory)
   const [fixedCostsResult] = await pool.query(`
-      SELECT COALESCE(SUM(amount), 0) AS total
-      FROM deposits
-      WHERE office_id = ?
-        AND deposit_type IN (1,3,5)
-        AND status = 1
-        AND date BETWEEN ? AND ?
+    SELECT COALESCE(SUM(amount), 0) AS total
+    FROM deposits
+    WHERE office_id = ?
+      AND deposit_type IN (1,3,5)
+      AND status = 1
+      AND date BETWEEN ? AND ?
   `, [officeId, startDate, endDate]);
   const [debtResult] = await pool.query(`
-      SELECT COALESCE(SUM(amount), 0) AS total
-      FROM setup_debt_transactions
-      WHERE office_id = ?
-        AND status = 1
-        AND created_at BETWEEN ? AND ?
+    SELECT COALESCE(SUM(amount), 0) AS total
+    FROM setup_debt_transactions
+    WHERE office_id = ?
+      AND status = 1
+      AND created_at BETWEEN ? AND ?
   `, [officeId, startDate, endDate]);
   const mandatoryFixedCosts = parseFloat(fixedCostsResult[0].total) + parseFloat(debtResult[0].total);
 
   // 4. Salaries & Performance Allowances
   const [salariesResult] = await pool.query(`
-      SELECT COALESCE(SUM(amount), 0) AS total_salaries
-      FROM deposits
-      WHERE office_id = ?
-        AND deposit_type = 6
-        AND status = 1
-        AND date BETWEEN ? AND ?
+    SELECT COALESCE(SUM(amount), 0) AS total_salaries
+    FROM deposits
+    WHERE office_id = ?
+      AND deposit_type = 6
+      AND status = 1
+      AND date BETWEEN ? AND ?
+  `, [officeId, startDate, endDate]);
+
+  // Also get performance allowances from deposits (deposit_type = 7)
+  const [allowancesResult] = await pool.query(`
+    SELECT COALESCE(SUM(amount), 0) AS total_allowances
+    FROM deposits
+    WHERE office_id = ?
+      AND deposit_type = 7
+      AND status = 1
+      AND date BETWEEN ? AND ?
   `, [officeId, startDate, endDate]);
 
   const salariesAndAllowances = 
     parseFloat(salariesResult[0].total_salaries || 0) + 
-    parseFloat(salariesResult[0].total_allowances || 0);
-
+    parseFloat(allowancesResult[0].total_allowances || 0);
 
   // Calculate Net Cash Position
   const adjustedDisbursed = amountDisbursed * 1.40;
   const netCashPosition = adjustedDisbursed - defaults - mandatoryFixedCosts - salariesAndAllowances;
+  
+  // Calculate shortfall against loan target
+  const shortfallAgainstTarget = minimumLoanTarget - adjustedDisbursed;
+  const totalMinimumNeeded = shortfallAgainstTarget > 0 ? shortfallAgainstTarget + mandatoryFixedCosts : mandatoryFixedCosts;
+
+  // Determine verdict based on calculations
+  let verdict = '';
+  let verdictReason = '';
+
+  if (amountDisbursed < minimumLoanTarget) {
+    // Under-disbursing branch - problem is disbursement
+    verdict = 'Not a going concern';
+    verdictReason = `The branch disbursed K${amountDisbursed.toLocaleString()} against a minimum target of K${minimumLoanTarget.toLocaleString()}. Even with 100% collection, zero defaults, and every client paying in full, this branch can only bring back K${adjustedDisbursed.toLocaleString()} against a K${minimumLoanTarget.toLocaleString()} target. The shortfall was locked in the day the branch under-disbursed. Adding mandatory fixed costs, K${totalMinimumNeeded.toLocaleString()} is the minimum this branch needs to recover from old defaults, refinancing, or other sources just to stand still. The problem is disbursement, not effort.`;
+  } else if (netCashPosition <= 0) {
+    // Met target but still losing money - problem is collections
+    verdict = 'Not a going concern';
+    verdictReason = `The branch disbursed K${amountDisbursed.toLocaleString()} (meeting the target) but has K${defaults.toLocaleString()} in defaults. Even with maximum expected repayment of K${adjustedDisbursed.toLocaleString()}, the branch cannot cover mandatory fixed costs (K${mandatoryFixedCosts.toLocaleString()}) and salaries/allowances (K${salariesAndAllowances.toLocaleString()}). This branch is eating its capital despite meeting the disbursement target. The problem is collections, not disbursement. Defaults must be reviewed with the same seriousness as disbursement.`;
+  } else {
+    // Healthy branch - positive net cash position
+    const marginPercentage = ((netCashPosition / amountDisbursed) * 100).toFixed(2);
+    verdict = 'Going concern';
+    verdictReason = `The branch meets the standard on both disbursement (K${amountDisbursed.toLocaleString()}) and collections. After covering all mandatory costs (K${mandatoryFixedCosts.toLocaleString()}) and salaries/allowances (K${salariesAndAllowances.toLocaleString()}), the branch has a surplus of K${netCashPosition.toLocaleString()} (${marginPercentage}% of disbursed amount). However, this margin is thin - a small increase in defaults or a poor month of disbursement is enough to erase it. The branch needs to be watched, not left alone.`;
+  }
 
   return {
     office_id: officeId,
+    office_name: officeInfo.length > 0 ? officeInfo[0].name : null,
+    workstations: workstations,
+    minimum_loan_target: minimumLoanTarget,
     amount_disbursed: amountDisbursed,
     adjusted_disbursed_140_percent: adjustedDisbursed,
+    shortfall_against_target: shortfallAgainstTarget,
     defaults: defaults,
     mandatory_fixed_costs: mandatoryFixedCosts,
     salaries_performance_allowances: salariesAndAllowances,
-    net_cash_position: netCashPosition
+    net_cash_position: netCashPosition,
+    total_minimum_needed: totalMinimumNeeded,
+    verdict: verdict,
+    verdict_reason: verdictReason
   };
 }
 
@@ -108,6 +156,7 @@ async function calculateNetCashPositionForDistrict(districtId, startDate, endDat
   let totalDefaults = 0;
   let totalMandatoryFixedCosts = 0;
   let totalSalariesAndAllowances = 0;
+  let totalMinimumLoanTarget = 0;
   const officeBreakdown = [];
 
   for (const office of officesResult) {
@@ -117,25 +166,53 @@ async function calculateNetCashPositionForDistrict(districtId, startDate, endDat
     totalDefaults += result.defaults;
     totalMandatoryFixedCosts += result.mandatory_fixed_costs;
     totalSalariesAndAllowances += result.salaries_performance_allowances;
+    totalMinimumLoanTarget += result.minimum_loan_target;
 
     officeBreakdown.push({
       office_id: office.id,
-      office_name: office.name,
-      net_cash_position: result.net_cash_position
+      office_name: result.office_name,
+      workstations: result.workstations,
+      minimum_loan_target: result.minimum_loan_target,
+      amount_disbursed: result.amount_disbursed,
+      net_cash_position: result.net_cash_position,
+      verdict: result.verdict,
+      verdict_reason: result.verdict_reason
     });
   }
 
   const totalAdjustedDisbursed = totalAmountDisbursed * 1.40;
   const totalNetCashPosition = totalAdjustedDisbursed - totalDefaults - totalMandatoryFixedCosts - totalSalariesAndAllowances;
+  const shortfallAgainstTarget = totalMinimumLoanTarget - totalAdjustedDisbursed;
+  const totalMinimumNeeded = shortfallAgainstTarget > 0 ? shortfallAgainstTarget + totalMandatoryFixedCosts : totalMandatoryFixedCosts;
+
+  // Determine verdict for district
+  let verdict = '';
+  let verdictReason = '';
+
+  if (totalAmountDisbursed < totalMinimumLoanTarget) {
+    verdict = 'Not a going concern';
+    verdictReason = `The district disbursed K${totalAmountDisbursed.toLocaleString()} against a minimum target of K${totalMinimumLoanTarget.toLocaleString()}. The problem is overall under-disbursement across offices in this district.`;
+  } else if (totalNetCashPosition <= 0) {
+    verdict = 'Not a going concern';
+    verdictReason = `The district met its disbursement target (K${totalAmountDisbursed.toLocaleString()}) but has high defaults (K${totalDefaults.toLocaleString()}). Combined mandatory fixed costs (K${totalMandatoryFixedCosts.toLocaleString()}) and salaries/allowances (K${totalSalariesAndAllowances.toLocaleString()}) exceed the adjusted disbursement (K${totalAdjustedDisbursed.toLocaleString()}). The problem is collections.`;
+  } else {
+    verdict = 'Going concern';
+    verdictReason = `The district meets targets on both disbursement and collections. Net cash position: K${totalNetCashPosition.toLocaleString()}. Margin is thin - needs monitoring.`;
+  }
 
   return {
     district_id: districtId,
+    total_minimum_loan_target: totalMinimumLoanTarget,
     total_amount_disbursed: totalAmountDisbursed,
     adjusted_disbursed_140_percent: totalAdjustedDisbursed,
+    shortfall_against_target: shortfallAgainstTarget,
     defaults: totalDefaults,
     mandatory_fixed_costs: totalMandatoryFixedCosts,
     salaries_performance_allowances: totalSalariesAndAllowances,
     net_cash_position: totalNetCashPosition,
+    total_minimum_needed: totalMinimumNeeded,
+    verdict: verdict,
+    verdict_reason: verdictReason,
     office_breakdown: officeBreakdown
   };
 }
@@ -152,6 +229,7 @@ async function calculateNetCashPositionForProvince(provinceId, startDate, endDat
   let totalDefaults = 0;
   let totalMandatoryFixedCosts = 0;
   let totalSalariesAndAllowances = 0;
+  let totalMinimumLoanTarget = 0;
   const officeBreakdown = [];
 
   for (const office of officesResult) {
@@ -161,25 +239,53 @@ async function calculateNetCashPositionForProvince(provinceId, startDate, endDat
     totalDefaults += result.defaults;
     totalMandatoryFixedCosts += result.mandatory_fixed_costs;
     totalSalariesAndAllowances += result.salaries_performance_allowances;
+    totalMinimumLoanTarget += result.minimum_loan_target;
 
     officeBreakdown.push({
       office_id: office.id,
-      office_name: office.name,
-      net_cash_position: result.net_cash_position
+      office_name: result.office_name,
+      workstations: result.workstations,
+      minimum_loan_target: result.minimum_loan_target,
+      amount_disbursed: result.amount_disbursed,
+      net_cash_position: result.net_cash_position,
+      verdict: result.verdict,
+      verdict_reason: result.verdict_reason
     });
   }
 
   const totalAdjustedDisbursed = totalAmountDisbursed * 1.40;
   const totalNetCashPosition = totalAdjustedDisbursed - totalDefaults - totalMandatoryFixedCosts - totalSalariesAndAllowances;
+  const shortfallAgainstTarget = totalMinimumLoanTarget - totalAdjustedDisbursed;
+  const totalMinimumNeeded = shortfallAgainstTarget > 0 ? shortfallAgainstTarget + totalMandatoryFixedCosts : totalMandatoryFixedCosts;
+
+  // Determine verdict for province
+  let verdict = '';
+  let verdictReason = '';
+
+  if (totalAmountDisbursed < totalMinimumLoanTarget) {
+    verdict = 'Not a going concern';
+    verdictReason = `The province disbursed K${totalAmountDisbursed.toLocaleString()} against a minimum target of K${totalMinimumLoanTarget.toLocaleString()}. The problem is overall under-disbursement across offices in this province.`;
+  } else if (totalNetCashPosition <= 0) {
+    verdict = 'Not a going concern';
+    verdictReason = `The province met its disbursement target (K${totalAmountDisbursed.toLocaleString()}) but has high defaults (K${totalDefaults.toLocaleString()}). Combined mandatory fixed costs (K${totalMandatoryFixedCosts.toLocaleString()}) and salaries/allowances (K${totalSalariesAndAllowances.toLocaleString()}) exceed the adjusted disbursement (K${totalAdjustedDisbursed.toLocaleString()}). The problem is collections.`;
+  } else {
+    verdict = 'Going concern';
+    verdictReason = `The province meets targets on both disbursement and collections. Net cash position: K${totalNetCashPosition.toLocaleString()}. Margin is thin - needs monitoring.`;
+  }
 
   return {
     province_id: provinceId,
+    total_minimum_loan_target: totalMinimumLoanTarget,
     total_amount_disbursed: totalAmountDisbursed,
     adjusted_disbursed_140_percent: totalAdjustedDisbursed,
+    shortfall_against_target: shortfallAgainstTarget,
     defaults: totalDefaults,
     mandatory_fixed_costs: totalMandatoryFixedCosts,
     salaries_performance_allowances: totalSalariesAndAllowances,
     net_cash_position: totalNetCashPosition,
+    total_minimum_needed: totalMinimumNeeded,
+    verdict: verdict,
+    verdict_reason: verdictReason,
     office_breakdown: officeBreakdown
   };
 }
