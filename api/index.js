@@ -21,6 +21,6 @@ router.use('/lcs-at-k50k-tier', lcsAtK50KTierRouter);
 router.use('/branch-net-contribution', branchNetContributionRouter);
 router.use('/branch-recovery-rate-month4', branchRecoveryRateMonth4Router);
 router.use('/summary', summaryRouter);
-router.use('/cash-position/net-cash-position', netCashPositionRouter);
+router.use('/cash-position', netCashPositionRouter);
 
 module.exports = router;
