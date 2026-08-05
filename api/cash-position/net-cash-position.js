@@ -57,6 +57,23 @@ async function calculateNetCashPositionForOffice(officeId, startDate, endDate) {
   `, [officeId, startDate, endDate]);
   const defaults = parseFloat(defaultsResult[0].total_defaults) || 0;
 
+  // 2a. Total Collected - payments received from borrowers
+  const [collectedResults] = await pool.query(`
+    SELECT COALESCE(SUM(t.total_collected), 0) AS total_collected
+    FROM loans l
+    JOIN (
+      SELECT
+        loan_id,
+        SUM(credit) AS total_collected
+      FROM loan_transactions
+      WHERE status = 'approved'
+      GROUP BY loan_id
+    ) t ON l.id = t.loan_id
+    WHERE l.office_id = ?
+      AND l.disbursement_date BETWEEN ? AND ?
+  `, [officeId, startDate, endDate]);
+  const totalCollected = parseFloat(collectedResults[0].total_collected) || 0;
+
   // 3. Mandatory Fixed Costs (Admin + Building + Statutory)
   const [fixedCostsResult] = await pool.query(`
     SELECT COALESCE(SUM(amount), 0) AS total
@@ -133,6 +150,7 @@ async function calculateNetCashPositionForOffice(officeId, startDate, endDate) {
     minimum_loan_target: minimumLoanTarget,
     amount_disbursed: amountDisbursed,
     adjusted_disbursed_140_percent: adjustedDisbursed,
+    total_collected: totalCollected,
     shortfall_against_target: shortfallAgainstTarget,
     defaults: defaults,
     mandatory_fixed_costs: mandatoryFixedCosts,
@@ -157,6 +175,7 @@ async function calculateNetCashPositionForDistrict(districtId, startDate, endDat
   let totalMandatoryFixedCosts = 0;
   let totalSalariesAndAllowances = 0;
   let totalMinimumLoanTarget = 0;
+  let totalCollected = 0;
   const officeBreakdown = [];
 
   for (const office of officesResult) {
@@ -167,6 +186,7 @@ async function calculateNetCashPositionForDistrict(districtId, startDate, endDat
     totalMandatoryFixedCosts += result.mandatory_fixed_costs;
     totalSalariesAndAllowances += result.salaries_performance_allowances;
     totalMinimumLoanTarget += result.minimum_loan_target;
+    totalCollected += result.total_collected;
 
     officeBreakdown.push({
       office_id: office.id,
@@ -205,6 +225,7 @@ async function calculateNetCashPositionForDistrict(districtId, startDate, endDat
     total_minimum_loan_target: totalMinimumLoanTarget,
     total_amount_disbursed: totalAmountDisbursed,
     adjusted_disbursed_140_percent: totalAdjustedDisbursed,
+    total_collected: totalCollected,
     shortfall_against_target: shortfallAgainstTarget,
     defaults: totalDefaults,
     mandatory_fixed_costs: totalMandatoryFixedCosts,
@@ -230,6 +251,7 @@ async function calculateNetCashPositionForProvince(provinceId, startDate, endDat
   let totalMandatoryFixedCosts = 0;
   let totalSalariesAndAllowances = 0;
   let totalMinimumLoanTarget = 0;
+  let totalCollected = 0;
   const officeBreakdown = [];
 
   for (const office of officesResult) {
@@ -240,6 +262,7 @@ async function calculateNetCashPositionForProvince(provinceId, startDate, endDat
     totalMandatoryFixedCosts += result.mandatory_fixed_costs;
     totalSalariesAndAllowances += result.salaries_performance_allowances;
     totalMinimumLoanTarget += result.minimum_loan_target;
+    totalCollected += result.total_collected;
 
     officeBreakdown.push({
       office_id: office.id,
@@ -278,6 +301,7 @@ async function calculateNetCashPositionForProvince(provinceId, startDate, endDat
     total_minimum_loan_target: totalMinimumLoanTarget,
     total_amount_disbursed: totalAmountDisbursed,
     adjusted_disbursed_140_percent: totalAdjustedDisbursed,
+    total_collected: totalCollected,
     shortfall_against_target: shortfallAgainstTarget,
     defaults: totalDefaults,
     mandatory_fixed_costs: totalMandatoryFixedCosts,

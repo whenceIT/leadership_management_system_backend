@@ -338,7 +338,10 @@ app.get("/districts",async(req,res)=>{
 
 // KPI Scores APIs
 const kpiScoresRouter = require('./api');
+const netCashPositionRouter = require('./api/cash-position/net-cash-position');
+
 app.use('/api/kpi-scores', kpiScoresRouter);
+app.use('/api/kpi-scores/cash-position', netCashPositionRouter);
 
 app.get("/offices", async (req, res) => {
     try {
