@@ -11,6 +11,7 @@ const lcsAtK50KTierRouter = require('./branch/lcsAtK50KTier');
 const branchNetContributionRouter = require('./branch/branchNetContribution');
 const branchRecoveryRateMonth4Router = require('./branch/branchRecoveryRateMonth4');
 const summaryRouter = require('./summary');
+const netCashPositionRouter = require('./cash-position/net-cash-position');
 
 // Mount routers
 router.use('/', kpiScoresRouter);
@@ -20,5 +21,6 @@ router.use('/lcs-at-k50k-tier', lcsAtK50KTierRouter);
 router.use('/branch-net-contribution', branchNetContributionRouter);
 router.use('/branch-recovery-rate-month4', branchRecoveryRateMonth4Router);
 router.use('/summary', summaryRouter);
+router.use('/cash-position/net-cash-position', netCashPositionRouter);
 
 module.exports = router;

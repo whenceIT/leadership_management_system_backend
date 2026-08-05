@@ -394,6 +394,25 @@ app.get("/office-users/:office_id", async (req, res) => {
 });
 
 
+app.post('/overall-score-checkpoint', async (req, res) => {
+    try {
+        const { office_id, score } = req.body;
+
+        if (office_id === undefined || score === undefined) {
+            return res.status(400).json({ error: "office_id and score are required" });
+        }
+
+        await pool.query(
+            `INSERT INTO slms_score_history (office_id, score, created_at) VALUES (?, ?, NOW())`,
+            [office_id, score]
+        );
+
+        res.json({ message: "Score saved successfully" });
+    } catch (err) {
+        console.error("Error saving score:", err);
+        res.status(500).json({ error: "Failed to save score" });
+    }
+});
 
 app.post('/create-smart-priority-actions', async (req, res) => {
   try {
