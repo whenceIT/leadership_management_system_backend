@@ -78,7 +78,7 @@ async function calculateNetCashPositionForOffice(officeId, startDate, endDate) {
   const [fixedCostsResult] = await pool.query(`
     SELECT COALESCE(SUM(amount), 0) AS total
     FROM deposits
-    WHERE office_id = ?
+    WHERE office = ?
       AND deposit_type IN (1,3,5)
       AND status = 1
       AND date BETWEEN ? AND ?
@@ -96,7 +96,7 @@ async function calculateNetCashPositionForOffice(officeId, startDate, endDate) {
   const [salariesResult] = await pool.query(`
     SELECT COALESCE(SUM(amount), 0) AS total_salaries
     FROM deposits
-    WHERE office_id = ?
+    WHERE office = ?
       AND deposit_type = 6
       AND status = 1
       AND date BETWEEN ? AND ?
@@ -106,7 +106,7 @@ async function calculateNetCashPositionForOffice(officeId, startDate, endDate) {
   const [allowancesResult] = await pool.query(`
     SELECT COALESCE(SUM(amount), 0) AS total_allowances
     FROM deposits
-    WHERE office_id = ?
+    WHERE office = ?
       AND deposit_type = 7
       AND status = 1
       AND date BETWEEN ? AND ?
