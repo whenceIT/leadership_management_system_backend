@@ -124,6 +124,10 @@ async function calculateNetCashPositionForOffice(officeId, startDate, endDate) {
   const shortfallAgainstTarget = minimumLoanTarget - adjustedDisbursed;
   const totalMinimumNeeded = shortfallAgainstTarget > 0 ? shortfallAgainstTarget + mandatoryFixedCosts : mandatoryFixedCosts;
 
+  // Calculate collection rate
+  const collectionRate = adjustedDisbursed > 0 ? (totalCollected / adjustedDisbursed) * 100 : 0;
+  const isCollectionGood = collectionRate >= 90;
+
   // Determine verdict based on calculations
   let verdict = '';
   let verdictReason = '';
@@ -135,12 +139,16 @@ async function calculateNetCashPositionForOffice(officeId, startDate, endDate) {
   } else if (netCashPosition <= 0) {
     // Met target but still losing money - problem is collections
     verdict = 'Not a going concern';
-    verdictReason = `The branch disbursed K${amountDisbursed.toLocaleString()} (meeting the target) but has K${defaults.toLocaleString()} in defaults. Even with maximum expected repayment of K${adjustedDisbursed.toLocaleString()}, the branch cannot cover mandatory fixed costs (K${mandatoryFixedCosts.toLocaleString()}) and salaries/allowances (K${salariesAndAllowances.toLocaleString()}). This branch is eating its capital despite meeting the disbursement target. The problem is collections, not disbursement. Defaults must be reviewed with the same seriousness as disbursement.`;
+    verdictReason = `The branch disbursed K${amountDisbursed.toLocaleString()} (meeting the target) but has K${defaults.toLocaleString()} in defaults (collection rate: ${collectionRate.toFixed(1)}%). Even with maximum expected repayment of K${adjustedDisbursed.toLocaleString()}, the branch cannot cover mandatory fixed costs (K${mandatoryFixedCosts.toLocaleString()}) and salaries/allowances (K${salariesAndAllowances.toLocaleString()}). This branch is eating its capital despite meeting the disbursement target. The problem is collections, not disbursement. Defaults must be reviewed with the same seriousness as disbursement.`;
+  } else if (!isCollectionGood) {
+    // Disbursed enough but collection is below 90%
+    verdict = 'At Risk';
+    verdictReason = `The branch disbursed K${amountDisbursed.toLocaleString()} (meeting target) and has positive net cash position (K${netCashPosition.toLocaleString()}), but collection rate is only ${collectionRate.toFixed(1)}% (below 90% threshold). Collected K${totalCollected.toLocaleString()} against expected K${adjustedDisbursed.toLocaleString()}. This puts the branch at risk - a small increase in defaults or poor collection could quickly turn the branch into a losing concern.`;
   } else {
-    // Healthy branch - positive net cash position
+    // Healthy branch - positive net cash position and good collection
     const marginPercentage = ((netCashPosition / amountDisbursed) * 100).toFixed(2);
     verdict = 'Going concern';
-    verdictReason = `The branch meets the standard on both disbursement (K${amountDisbursed.toLocaleString()}) and collections. After covering all mandatory costs (K${mandatoryFixedCosts.toLocaleString()}) and salaries/allowances (K${salariesAndAllowances.toLocaleString()}), the branch has a surplus of K${netCashPosition.toLocaleString()} (${marginPercentage}% of disbursed amount). However, this margin is thin - a small increase in defaults or a poor month of disbursement is enough to erase it. The branch needs to be watched, not left alone.`;
+    verdictReason = `The branch meets the standard on both disbursement (K${amountDisbursed.toLocaleString()}) and collections (${collectionRate.toFixed(1)}% collected). After covering all mandatory costs (K${mandatoryFixedCosts.toLocaleString()}) and salaries/allowances (K${salariesAndAllowances.toLocaleString()}), the branch has a surplus of K${netCashPosition.toLocaleString()} (${marginPercentage}% of disbursed amount). However, this margin is thin - a small increase in defaults or a poor month of disbursement is enough to erase it. The branch needs to be watched, not left alone.`;
   }
 
   return {
@@ -151,6 +159,7 @@ async function calculateNetCashPositionForOffice(officeId, startDate, endDate) {
     amount_disbursed: amountDisbursed,
     adjusted_disbursed_140_percent: adjustedDisbursed,
     total_collected: totalCollected,
+    collection_rate: parseFloat(collectionRate.toFixed(2)),
     shortfall_against_target: shortfallAgainstTarget,
     defaults: defaults,
     mandatory_fixed_costs: mandatoryFixedCosts,
@@ -205,6 +214,10 @@ async function calculateNetCashPositionForDistrict(districtId, startDate, endDat
   const shortfallAgainstTarget = totalMinimumLoanTarget - totalAdjustedDisbursed;
   const totalMinimumNeeded = shortfallAgainstTarget > 0 ? shortfallAgainstTarget + totalMandatoryFixedCosts : totalMandatoryFixedCosts;
 
+  // Calculate collection rate
+  const collectionRate = totalAdjustedDisbursed > 0 ? (totalCollected / totalAdjustedDisbursed) * 100 : 0;
+  const isCollectionGood = collectionRate >= 90;
+
   // Determine verdict for district
   let verdict = '';
   let verdictReason = '';
@@ -214,10 +227,13 @@ async function calculateNetCashPositionForDistrict(districtId, startDate, endDat
     verdictReason = `The district disbursed K${totalAmountDisbursed.toLocaleString()} against a minimum target of K${totalMinimumLoanTarget.toLocaleString()}. The problem is overall under-disbursement across offices in this district.`;
   } else if (totalNetCashPosition <= 0) {
     verdict = 'Not a going concern';
-    verdictReason = `The district met its disbursement target (K${totalAmountDisbursed.toLocaleString()}) but has high defaults (K${totalDefaults.toLocaleString()}). Combined mandatory fixed costs (K${totalMandatoryFixedCosts.toLocaleString()}) and salaries/allowances (K${totalSalariesAndAllowances.toLocaleString()}) exceed the adjusted disbursement (K${totalAdjustedDisbursed.toLocaleString()}). The problem is collections.`;
+    verdictReason = `The district met its disbursement target (K${totalAmountDisbursed.toLocaleString()}) but has high defaults (K${totalDefaults.toLocaleString()}, collection rate: ${collectionRate.toFixed(1)}%). Combined mandatory fixed costs (K${totalMandatoryFixedCosts.toLocaleString()}) and salaries/allowances (K${totalSalariesAndAllowances.toLocaleString()}) exceed the adjusted disbursement (K${totalAdjustedDisbursed.toLocaleString()}). The problem is collections.`;
+  } else if (!isCollectionGood) {
+    verdict = 'At Risk';
+    verdictReason = `The district disbursed K${totalAmountDisbursed.toLocaleString()} (meeting target) and has positive net cash position (K${totalNetCashPosition.toLocaleString()}), but collection rate is only ${collectionRate.toFixed(1)}% (below 90% threshold). Collected K${totalCollected.toLocaleString()} against expected K${totalAdjustedDisbursed.toLocaleString()}. This puts the district at risk.`;
   } else {
     verdict = 'Going concern';
-    verdictReason = `The district meets targets on both disbursement and collections. Net cash position: K${totalNetCashPosition.toLocaleString()}. Margin is thin - needs monitoring.`;
+    verdictReason = `The district meets targets on both disbursement (K${totalAmountDisbursed.toLocaleString()}) and collections (${collectionRate.toFixed(1)}% collected). Net cash position: K${totalNetCashPosition.toLocaleString()}. Margin is thin - needs monitoring.`;
   }
 
   return {
@@ -226,6 +242,7 @@ async function calculateNetCashPositionForDistrict(districtId, startDate, endDat
     total_amount_disbursed: totalAmountDisbursed,
     adjusted_disbursed_140_percent: totalAdjustedDisbursed,
     total_collected: totalCollected,
+    collection_rate: parseFloat(collectionRate.toFixed(2)),
     shortfall_against_target: shortfallAgainstTarget,
     defaults: totalDefaults,
     mandatory_fixed_costs: totalMandatoryFixedCosts,
@@ -281,6 +298,10 @@ async function calculateNetCashPositionForProvince(provinceId, startDate, endDat
   const shortfallAgainstTarget = totalMinimumLoanTarget - totalAdjustedDisbursed;
   const totalMinimumNeeded = shortfallAgainstTarget > 0 ? shortfallAgainstTarget + totalMandatoryFixedCosts : totalMandatoryFixedCosts;
 
+  // Calculate collection rate
+  const collectionRate = totalAdjustedDisbursed > 0 ? (totalCollected / totalAdjustedDisbursed) * 100 : 0;
+  const isCollectionGood = collectionRate >= 90;
+
   // Determine verdict for province
   let verdict = '';
   let verdictReason = '';
@@ -290,10 +311,13 @@ async function calculateNetCashPositionForProvince(provinceId, startDate, endDat
     verdictReason = `The province disbursed K${totalAmountDisbursed.toLocaleString()} against a minimum target of K${totalMinimumLoanTarget.toLocaleString()}. The problem is overall under-disbursement across offices in this province.`;
   } else if (totalNetCashPosition <= 0) {
     verdict = 'Not a going concern';
-    verdictReason = `The province met its disbursement target (K${totalAmountDisbursed.toLocaleString()}) but has high defaults (K${totalDefaults.toLocaleString()}). Combined mandatory fixed costs (K${totalMandatoryFixedCosts.toLocaleString()}) and salaries/allowances (K${totalSalariesAndAllowances.toLocaleString()}) exceed the adjusted disbursement (K${totalAdjustedDisbursed.toLocaleString()}). The problem is collections.`;
+    verdictReason = `The province met its disbursement target (K${totalAmountDisbursed.toLocaleString()}) but has high defaults (K${totalDefaults.toLocaleString()}, collection rate: ${collectionRate.toFixed(1)}%). Combined mandatory fixed costs (K${totalMandatoryFixedCosts.toLocaleString()}) and salaries/allowances (K${totalSalariesAndAllowances.toLocaleString()}) exceed the adjusted disbursement (K${totalAdjustedDisbursed.toLocaleString()}). The problem is collections.`;
+  } else if (!isCollectionGood) {
+    verdict = 'At Risk';
+    verdictReason = `The province disbursed K${totalAmountDisbursed.toLocaleString()} (meeting target) and has positive net cash position (K${totalNetCashPosition.toLocaleString()}), but collection rate is only ${collectionRate.toFixed(1)}% (below 90% threshold). Collected K${totalCollected.toLocaleString()} against expected K${totalAdjustedDisbursed.toLocaleString()}. This puts the province at risk.`;
   } else {
     verdict = 'Going concern';
-    verdictReason = `The province meets targets on both disbursement and collections. Net cash position: K${totalNetCashPosition.toLocaleString()}. Margin is thin - needs monitoring.`;
+    verdictReason = `The province meets targets on both disbursement (K${totalAmountDisbursed.toLocaleString()}) and collections (${collectionRate.toFixed(1)}% collected). Net cash position: K${totalNetCashPosition.toLocaleString()}. Margin is thin - needs monitoring.`;
   }
 
   return {
@@ -302,6 +326,7 @@ async function calculateNetCashPositionForProvince(provinceId, startDate, endDat
     total_amount_disbursed: totalAmountDisbursed,
     adjusted_disbursed_140_percent: totalAdjustedDisbursed,
     total_collected: totalCollected,
+    collection_rate: parseFloat(collectionRate.toFixed(2)),
     shortfall_against_target: shortfallAgainstTarget,
     defaults: totalDefaults,
     mandatory_fixed_costs: totalMandatoryFixedCosts,
