@@ -26,6 +26,7 @@ app.get("/health", async (req, res) => {
 
 
 app.post("/sign-in",async(req,res)=>{
+    console.log('login in...');
     try{
         const {email,password} = req.body;
         const user = await pool.query(`SELECT * FROM users WHERE email = ? AND status = 'active' `,[email])
