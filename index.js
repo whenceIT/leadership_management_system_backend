@@ -25,27 +25,33 @@ app.get("/health", async (req, res) => {
 });
 
 
-app.post("/sign-in",async(req,res)=>{
-    console.log('login in...')
-    try{
-        const {email,password} = req.body;
-        const user = await pool.query(`SELECT * FROM users WHERE email = ? AND status = 'active' `,[email])
-        console.log(user)
-        const userPassword =  user[0][0].password
-        console.log(userPassword)
-        const finalPassword = userPassword.replace("$2y$", "$2b$")
-      //  console.log(finalPassword)
-        const isPasswordMatching = bcrypt.compareSync(password,finalPassword)
-       // console.log(isPasswordMatching)
-        if(isPasswordMatching){
-          res.json(user[0][0])
-        }else{
-          res.json('incorrect password')
+app.post("/sign-in", async (req, res) => {
+    console.log('login in...');
+    console.log(req.body);
+    try {
+        const { email, password } = req.body;
+        const user = await pool.query(`SELECT * FROM users WHERE email = ? AND status = 'active'`, [email]);
+        console.log(user);
+
+        if (!user[0] || user[0].length === 0) {
+            return res.status(401).json({ error: "Invalid credentials" });
         }
-    }catch(err){
-        console.log(err)
+
+        const userPassword = user[0][0].password;
+        console.log(userPassword);
+        const finalPassword = userPassword.replace("$2y$", "$2b$");
+        const isPasswordMatching = bcrypt.compareSync(password, finalPassword);
+
+        if (isPasswordMatching) {
+            res.json(user[0][0]);
+        } else {
+            res.status(401).json({ error: "Invalid credentials" });
+        }
+    } catch (err) {
+        console.log(err);
+        res.status(500).json({ error: "Login failed" });
     }
-})
+});
 
 
 
