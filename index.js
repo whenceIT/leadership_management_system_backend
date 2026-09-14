@@ -26,10 +26,11 @@ app.get("/health", async (req, res) => {
 
 
 app.post("/sign-in",async(req,res)=>{
-    console.log('login in...');
+    console.log('login in...')
     try{
         const {email,password} = req.body;
         const user = await pool.query(`SELECT * FROM users WHERE email = ? AND status = 'active' `,[email])
+        console.log(user)
         const userPassword =  user[0][0].password
         console.log(userPassword)
         const finalPassword = userPassword.replace("$2y$", "$2b$")
