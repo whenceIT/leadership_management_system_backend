@@ -399,21 +399,58 @@ app.get("/office-users/:office_id", async (req, res) => {
 
 app.post('/overall-score-checkpoint', async (req, res) => {
     try {
-        const { office_id, score } = req.body;
+        const { office_id, score, type } = req.body;
 
         if (office_id === undefined || score === undefined) {
             return res.status(400).json({ error: "office_id and score are required" });
         }
 
         await pool.query(
-            `INSERT INTO slms_score_history (office_id, score, created_at) VALUES (?, ?, NOW())`,
-            [office_id, score]
+            `DELETE FROM slms_score_history WHERE office_id = ? AND (type = ? OR (type IS NULL AND ? IS NULL))`,
+            [office_id, type || null, type || null]
+        );
+
+        await pool.query(
+            `INSERT INTO slms_score_history (office_id, score, type, created_at) VALUES (?, ?, ?, NOW())`,
+            [office_id, score, type || null]
         );
 
         res.json({ message: "Score saved successfully" });
     } catch (err) {
         console.error("Error saving score:", err);
         res.status(500).json({ error: "Failed to save score" });
+    }
+});
+
+app.get('/overall-score-checkpoint', async (req, res) => {
+    try {
+        const { office_id, type } = req.query;
+
+        if (!office_id) {
+            return res.status(400).json({ error: "office_id is required" });
+        }
+
+        let query = `SELECT * FROM slms_score_history WHERE office_id = ?`;
+        const params = [office_id];
+
+        if (type) {
+            query += ` AND type = ?`;
+            params.push(type);
+        }
+
+        query += ` ORDER BY created_at DESC`;
+
+        const [results] = await pool.query(query, params);
+
+        res.json({
+            success: true,
+            office_id,
+            count: results.length,
+            data: results
+        });
+    } catch (err) {
+        console.error("Error fetching overall-score-checkpoint:", err);
+        res.status(500).json({ error: "Failed to fetch overall-score-checkpoint" });
     }
 });
 
