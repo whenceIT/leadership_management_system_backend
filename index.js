@@ -347,8 +347,34 @@ app.get("/districts",async(req,res)=>{
 const kpiScoresRouter = require('./api');
 const netCashPositionRouter = require('./api/cash-position/net-cash-position');
 
+app.use('/api', kpiScoresRouter);
 app.use('/api/kpi-scores', kpiScoresRouter);
 app.use('/api/kpi-scores/cash-position', netCashPositionRouter);
+
+// Remuneration APIs
+const remunerationRouter = require('./api/remuneration');
+const remunerationTiersRouter = require('./api/remuneration/tiers');
+const remunerationConfigsRouter = require('./api/remuneration/configs');
+const remunerationComponentsRouter = require('./api/remuneration/components');
+const remunerationComponentValuesRouter = require('./api/remuneration/component-values');
+const remunerationCriteriaRouter = require('./api/remuneration/criteria');
+const remunerationHousingBandsRouter = require('./api/remuneration/housing-bands');
+const remunerationBonusRulesRouter = require('./api/remuneration/bonus-rules');
+const remunerationAssignmentsRouter = require('./api/remuneration/assignments');
+const remunerationAssessmentsRouter = require('./api/remuneration/assessments');
+const remunerationCalculateRouter = require('./api/remuneration/calculate');
+
+app.use('/api/remuneration', remunerationRouter);
+app.use('/api/remuneration/tiers', remunerationTiersRouter);
+app.use('/api/remuneration/configs', remunerationConfigsRouter);
+app.use('/api/remuneration/components', remunerationComponentsRouter);
+app.use('/api/remuneration/component-values', remunerationComponentValuesRouter);
+app.use('/api/remuneration/criteria', remunerationCriteriaRouter);
+app.use('/api/remuneration/housing-bands', remunerationHousingBandsRouter);
+app.use('/api/remuneration/bonus-rules', remunerationBonusRulesRouter);
+app.use('/api/remuneration/assignments', remunerationAssignmentsRouter);
+app.use('/api/remuneration/assessments', remunerationAssessmentsRouter);
+app.use('/api/remuneration/calculate', remunerationCalculateRouter);
 
 app.get("/offices", async (req, res) => {
     try {
