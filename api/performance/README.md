@@ -7,14 +7,14 @@ Retrieves consultant loan-performance metrics grouped by office.
 ## Request
 
 ```
-GET /api/performance/consultants-performance-by-office?office_id=1&start_date=2026-10-01&end_date=2026-10-31
+GET /api/performance/consultants-performance-by-office?start_date=2026-10-01&end_date=2026-10-31
 ```
 
 ### Query parameters
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `office_id` | string | **Yes** | Office ID. Returns `400` if missing. |
+| `office_id` | string | No | Office ID. When omitted, results are returned for **all offices**. |
 | `start_date` | string | No | Cycle start date (`YYYY-MM-DD`). Defaults to the consultant's cycle-derived date range. |
 | `end_date` | string | No | Cycle end date (`YYYY-MM-DD`). Defaults to the consultant's cycle-derived date range. |
 
@@ -80,7 +80,6 @@ When `start_date`/`end_date` are omitted, the cycle range is derived per consult
 
 | Status | Body | Meaning |
 |--------|------|---------|
-| 400 | `{ "error": "office_id is required" }` | `office_id` missing |
 | 500 | `{ "error": "Something went wrong." }` | Server error |
 
 ## Example with curl
@@ -110,14 +109,14 @@ GET https://lms2backend.whencefinancesystem.com/consultants-performance-by-offic
 
 | Parameter    | Type   | Required | Description                                 |
 |-------------|--------|----------|---------------------------------------------|
-| `office_id`  | int    | Yes      | The branch/office ID to fetch consultants for |
-| `start_date` | string | Yes      | Period start date — format `YYYY-MM-DD`     |
-| `end_date`   | string | Yes      | Period end date — format `YYYY-MM-DD`       |
+| `office_id`  | int    | No       | The branch/office ID. When omitted, all offices are returned. |
+| `start_date` | string | No       | Period start date — format `YYYY-MM-DD`     |
+| `end_date`   | string | No       | Period end date — format `YYYY-MM-DD`       |
 
 ### Example Request
 
 ```
-GET https://lms2backend.whencefinancesystem.com/consultants-performance-by-office?office_id=5&start_date=2026-10-01&end_date=2026-10-31
+GET https://lms2backend.whencefinancesystem.com/consultants-performance-by-office?start_date=2026-10-01&end_date=2026-10-31
 ```
 
 ---
