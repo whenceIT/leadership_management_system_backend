@@ -351,6 +351,9 @@ app.use('/api', kpiScoresRouter);
 app.use('/api/kpi-scores', kpiScoresRouter);
 app.use('/api/kpi-scores/cash-position', netCashPositionRouter);
 
+const performanceRouter = require('./api/performance');
+app.use('/api/performance', performanceRouter);
+
 // Remuneration APIs
 const remunerationRouter = require('./api/remuneration');
 const remunerationTiersRouter = require('./api/remuneration/tiers');
