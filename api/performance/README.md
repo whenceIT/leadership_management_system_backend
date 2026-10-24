@@ -57,8 +57,9 @@ When `start_date`/`end_date` are omitted, the cycle range is derived per consult
 |-------|------|-------------|
 | `user_id` | int | Consultant user ID |
 | `office` | int | Office ID (`users.office_id`) |
-| `province` | int | Province ID (`offices.province_id`) |
-| `district` | int | District ID (`offices.district_id`) |
+| `office_name` | string | Office name (`offices.name`) |
+| `province` | string | Province name (`province.name`) |
+| `district` | string | District name (`districts.name`) |
 | `name` | string | Full name (first + last) |
 | `total_uncollected` | string | Total uncollected amount (2 decimals) |
 | `test_total_uncollected` | string | Previous-cycle total uncollected (2 decimals) |

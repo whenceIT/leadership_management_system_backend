@@ -34,10 +34,14 @@ router.get('/consultants-performance-by-office', async (req, res) => {
 
       // GET CONSULTANTS IN OFFICE
       const [consultants] = await pool.query(`
-        SELECT u.id, u.first_name, u.last_name, u.office_id, o.province_id, o.district_id
+        SELECT u.id, u.first_name, u.last_name, u.office_id,
+               o.province_id, p.name AS province_name,
+               o.district_id, d.name AS district_name
         FROM users u
         JOIN role_users ru ON ru.user_id = u.id
         JOIN offices o ON o.id = u.office_id
+        LEFT JOIN province p ON p.id = o.province_id
+        LEFT JOIN districts d ON d.id = o.district_id
         WHERE ru.role_id IN (3,4,6)
           AND u.office_id = ?
           AND u.status = 'active'
@@ -269,8 +273,8 @@ router.get('/consultants-performance-by-office', async (req, res) => {
           user_id,
           office: consultant.office_id,
           office_name: office.name,
-          province: consultant.province_id,
-          district: consultant.district_id,
+          province: consultant.province_name,
+          district: consultant.district_name,
           name: `${consultant.first_name} ${consultant.last_name}`,
           total_uncollected: total_uncollected.toFixed(2),
           test_total_uncollected: test_total_uncollected.toFixed(2),
