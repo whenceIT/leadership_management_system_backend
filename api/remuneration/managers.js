@@ -33,7 +33,7 @@ router.get("/", async (req, res) => {
       LEFT JOIN districts d ON d.id = o.district_id
       LEFT JOIN province p ON p.id = o.province_id
       WHERE ru.role_id NOT IN (2, 3)
-      WHERE u.status = 'active'
+        AND u.status = 'active'
       ORDER BY u.created_at DESC
     `;
 
