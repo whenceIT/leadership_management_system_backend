@@ -17,10 +17,14 @@ router.get("/", async (req, res) => {
              u.phone,
              u.status,
              u.created_at,
-             jp.name AS job_position,
+             u.office_id,
              o.name AS office_name,
+             o.district_id,
              d.name AS district_name,
+             o.province_id,
              p.name AS province_name,
+             jp.id AS job_position_id,
+             jp.name AS job_position,
              ru.role_id
       FROM users u
       JOIN role_users ru ON ru.user_id = u.id
