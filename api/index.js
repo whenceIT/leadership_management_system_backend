@@ -24,6 +24,7 @@ const remunerationAssignmentsRouter = require('./remuneration/assignments');
 const remunerationAssessmentsRouter = require('./remuneration/assessments');
 const remunerationCalculateRouter = require('./remuneration/calculate');
 const remunerationPerformanceCreteriaRouter = require('./remuneration/performance-creteria');
+const remunerationManagersRouter = require('./remuneration/managers');
 
 // Mount routers
 router.use('/', kpiScoresRouter);
@@ -48,5 +49,6 @@ router.use('/remuneration/assignments', remunerationAssignmentsRouter);
 router.use('/remuneration/assessments', remunerationAssessmentsRouter);
 router.use('/remuneration/calculate', remunerationCalculateRouter);
 router.use('/remuneration/performance-creteria', remunerationPerformanceCreteriaRouter);
+router.use('/remuneration/managers', remunerationManagersRouter);
 
 module.exports = router;

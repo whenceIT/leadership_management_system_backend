@@ -367,6 +367,7 @@ const remunerationAssignmentsRouter = require('./api/remuneration/assignments');
 const remunerationAssessmentsRouter = require('./api/remuneration/assessments');
 const remunerationCalculateRouter = require('./api/remuneration/calculate');
 const remunerationPerformanceCreteriaRouter = require('./api/remuneration/performance-creteria');
+const remunerationManagersRouter = require('./api/remuneration/managers');
 
 app.use('/api/remuneration', remunerationRouter);
 app.use('/api/remuneration/tiers', remunerationTiersRouter);
@@ -380,6 +381,7 @@ app.use('/api/remuneration/assignments', remunerationAssignmentsRouter);
 app.use('/api/remuneration/assessments', remunerationAssessmentsRouter);
 app.use('/api/remuneration/calculate', remunerationCalculateRouter);
 app.use('/api/remuneration/performance-creteria', remunerationPerformanceCreteriaRouter);
+app.use('/api/remuneration/managers', remunerationManagersRouter);
 
 app.get("/offices", async (req, res) => {
     try {
