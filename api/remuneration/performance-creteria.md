@@ -14,17 +14,18 @@ GET /api/remuneration/performance-creteria?job_position=branch_manager&office_id
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `job_position` | string | **Yes** | Position type: `branch_manager`, `province_manager`, `district_manager`, `payroll_manager`, `motor_loans` |
-| `user_id` | string | No | Required for `payroll_manager` and `motor_loans` |
+| `job_position` | string | **Yes** | Position type: `branch_manager`, `province_manager`, `district_manager`, `payroll_manager`, `motor_loans`, `recoveries_coordinator`, `risk_manager`, `manager_administration`, `policy_manager` |
+| `user_id` | string | No | Required for `payroll_manager` and `motor_loans`. Not required for `manager_administration` or `policy_manager` (institution-wide). |
 | `office_id` | string | No | Required for `branch_manager`, `province_manager`, `district_manager` |
 | `start_date` | string | No | Circle start date (`YYYY-MM-DD`). Defaults to 24th of previous month |
 | `end_date` | string | No | Circle end date (`YYYY-MM-DD`). Defaults to 24th of current month |
 
 ### Circle period default
 
-When `start_date` and `end_date` are omitted, the circle period defaults to:
-- **Start:** 24th of the previous month
-- **End:** 24th of the current month
+When `start_date` and `end_date` are omitted:
+
+- **Most positions:** Circle period defaults to 24th of the previous month → 24th of the current month
+- **`manager_administration`, `policy_manager`, and `performance_manager`:** Always filtered by the past **12 months** (from 12 months ago to today), regardless of any passed date params. These are annual targets.
 
 ---
 
@@ -65,9 +66,84 @@ Requires `user_id`. Returns total collected for loans where `loan_product_id = 0
 GET /api/remuneration/performance-creteria?job_position=motor_loans&user_id=42
 ```
 
----
+### recoveries_coordinator
+No `user_id` or `office_id` required. Returns monthly net recovered (total recovered minus total costs) within the circle period.
 
-## Example response
+```
+GET /api/remuneration/performance-creteria?job_position=recoveries_coordinator
+```
+### risk_manager
+
+No `user_id` or `office_id` required. Returns the Monthly Revenue Benchmark — revenue from closed loans within the circle period. Institution-wide (no user filter).
+
+```
+GET /api/remuneration/performance-creteria?job_position=risk_manager
+```
+
+**Monthly Revenue formula:**
+
+| Component | Source Table | Description |
+|-----------|-------------|-------------|
+| Interest income | `loan_transactions` + `loans` | `debit` sum where `transaction_type = 'interest_initial'` and `loans.status = 'closed'` within circle period |
+| Penalty income | `loan_transactions` + `loans` | `debit` sum where `transaction_type = 'specified_due_date_fee'` and `loans.status = 'closed'` within circle period |
+
+**Monthly Revenue = Interest income + Penalty income**
+
+### manager_administration
+No `user_id` or `office_id` required. Returns the Value Preserved amount — net value actually returned to the institution within the circle period. Institution-wide (no user filter). Defaults to the past 12 months when no date params are passed.
+
+```
+GET /api/remuneration/performance-creteria?job_position=manager_administration
+```
+
+**Value Preserved formula:**
+
+| Component | Source Table | Description |
+|-----------|-------------|-------------|
+| Credit sum | `loan_transactions` | `credit` sum within circle period |
+| Credit sum | `office_loan_transactions` | `credit` sum within circle period |
+| Advance recoveries | `advance_transactions` | `amount_paid` sum within circle period |
+| Setup debt | `setup_debt_transactions` | `amount` sum within circle period |
+| Deposits | `deposits` | `amount` sum within circle period |
+
+**Value Preserved = loan_transactions.credit + office_loan_transactions.credit + advance_transactions.amount_paid + setup_debt_transactions.amount + deposits.amount**
+
+### policy_manager
+No `user_id` or `office_id` required. Returns the Value Protected/Enabled amount — value protecting/enabling the institution (point-in-time, no period filter). Institution-wide (no user filter).
+
+```
+GET /api/remuneration/performance-creteria?job_position=policy_manager
+```
+
+**Value Protected/Enabled formula:**
+
+| Component | Source Table | Description |
+|-----------|-------------|-------------|
+| Collateral approved value | `collaterals` | `approved_value` sum within circle period |
+| Branch asset inventory total value | `branch_asset_inventories` | `total_value` sum within circle period |
+| Fleet current value | `fleets` | `current_value` sum within circle period |
+
+**Value Protected/Enabled = Collateral approved value + Branch asset inventory total value + Fleet current value**
+
+### performance_manager
+
+No `user_id` or `office_id` required. Returns the Value Protected/Optimized (Annual) amount — value optimized through the loan portfolio within the past 12 months (annual target). Institution-wide (no user filter). Always filtered by the past 12 months regardless of any passed date params.
+
+```
+GET /api/remuneration/performance-creteria?job_position=performance_manager
+```
+
+**Value Protected/Optimized formula:**
+
+| Component | Source Table | Description |
+|-----------|-------------|-------------|
+| Collateral approved value | `collaterals` | `approved_value` sum within past 12 months |
+| Branch asset inventory total value | `branch_asset_inventories` | `total_value` sum within past 12 months |
+| Fleet current value | `fleets` | `current_value` sum within past 12 months |
+
+**Value Protected/Optimized = Collateral approved value + Branch asset inventory total value + Fleet current value**
+
+---
 
 ```json
 {
@@ -130,6 +206,6 @@ Summed across all consultant loans in scope for the circle period.
 ## Files
 
 - `api/remuneration/performance-creteria.js` — route handler
-- `api/remuneration/performance-creteria-calc.js` — calculation functions (`baseTotalOfficeCollected`, `provinceTotalCollected`, `districtTotalCollected`, `payrollmanagerTotalCollected`, `motorloansTotalCollected`)
+- `api/remuneration/performance-creteria-calc.js` — calculation functions (`getCirclePeriod`, `baseTotalOfficeCollected`, `provinceTotalCollected`, `districtTotalCollected`, `payrollmanagerTotalCollected`, `motorloansTotalCollected`, `recoveriescoordinatorTotalCollected`, `riskmanagerTotalCollected`, `manageradministrationTargetCollected`, `policymanagerTargetCollected`)
 
 Mounted in `index.js` at `app.use('/api/remuneration/performance-creteria', ...)`.
