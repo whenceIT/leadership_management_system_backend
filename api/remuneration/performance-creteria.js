@@ -86,10 +86,11 @@ router.get("/", async (req, res) => {
       case "province_manager":
       case "province": {
         if (!office_id) {
-          return res.status(400).json({
-            success: false,
-            error: "office_id is required to determine province",
-          });
+          office_id = 67
+          // return res.status(400).json({
+          //   success: false,
+          //   error: "office_id is required to determine province",
+          // });
         }
         const [officeRows] = await pool.query(
           `SELECT province_id FROM offices WHERE id = ?`,
@@ -172,7 +173,7 @@ router.get("/", async (req, res) => {
         break;
       }
 
-      case "motor_vehicle_manager":
+      case "motor_vehicles_manager":
       case "motorloans": {
         if (!user_id) {
           return res.status(400).json({

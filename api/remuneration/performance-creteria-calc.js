@@ -181,7 +181,7 @@ async function recoveriescoordinatorTotalCollected(startDate, endDate) {
   const [costsRows] = await pool.query(
     `SELECT COALESCE(SUM(rc2.amount), 0) AS total
      FROM recovery_costs rc2
-     JOIN recovery_cases rc ON rc2.recovery_case_id = rc.id
+     JOIN recovery_cases rc ON rc2.case_id = rc.id
      WHERE rc.approved_date IS NOT NULL
        AND rc2.cost_date BETWEEN ? AND ?`,
     [startDate, endDate]
